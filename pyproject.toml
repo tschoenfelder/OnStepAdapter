@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onstep-adapter"
+version = "0.2.0"
+description = "Shared-connection Python adapter for OnStep mount and focuser control"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+authors = [{name = "Thomas Schoenfelder"}]
+dependencies = ["pyserial>=3.5"]
+keywords = ["astronomy", "telescope", "onstep", "mount", "focuser"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Astronomy",
+]
+
+[project.urls]
+Homepage = "https://github.com/tschoenfelder/OnStepAdapter"
+Documentation = "https://github.com/tschoenfelder/OnStepAdapter/tree/main/docs"
+Issues = "https://github.com/tschoenfelder/OnStepAdapter/issues"
+
+[tool.setuptools]
+packages = [
+  "onstep_adapter",
+  "smart_telescope",
+  "smart_telescope.adapters",
+  "smart_telescope.adapters.onstep",
+  "smart_telescope.ports",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
