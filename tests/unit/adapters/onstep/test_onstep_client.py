@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
-from onstep_adapter import OnStepClient
+from onstep_adapter import OnStepClient, OnStepMotionCalibration
 from smart_telescope.adapters.onstep.serial_bus import OnStepSerialBus
 
 
@@ -20,6 +20,27 @@ def test_client_exposes_mount_and_focuser_on_same_bus() -> None:
 
     assert client.mount.serial_bus is bus
     assert client.focuser._bus is bus
+
+
+def test_client_passes_motion_calibration_to_mount() -> None:
+    calibration = OnStepMotionCalibration(
+        guide_ra_east_arcsec_per_s=1.0,
+        guide_ra_west_arcsec_per_s=1.0,
+        guide_dec_north_arcsec_per_s=1.0,
+        guide_dec_south_arcsec_per_s=1.0,
+        center_ra_east_arcsec_per_s=2.0,
+        center_ra_west_arcsec_per_s=2.0,
+        center_dec_north_arcsec_per_s=2.0,
+        center_dec_south_arcsec_per_s=2.0,
+    )
+
+    client = OnStepClient(
+        "/dev/test",
+        serial_bus=_bus(),
+        motion_calibration=calibration,
+    )
+
+    assert client.mount._motion_calibration is calibration
 
 
 def test_connect_returns_structured_result() -> None:

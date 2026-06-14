@@ -6,7 +6,7 @@ from types import TracebackType
 
 from .focuser import OnStepFocuser
 from .mount import OnStepMount
-from .results import OnStepConnectionResult
+from .results import OnStepConnectionResult, OnStepMotionCalibration
 from .safety import OnStepSafetyConfig
 from .serial_bus import OnStepSerialBus
 
@@ -21,6 +21,7 @@ class OnStepClient:
         baud_rate: int = 9600,
         timeout: float = 2.0,
         safety_config: OnStepSafetyConfig | None = None,
+        motion_calibration: OnStepMotionCalibration | None = None,
         serial_bus: OnStepSerialBus | None = None,
     ) -> None:
         self.port = port
@@ -30,6 +31,7 @@ class OnStepClient:
             baud_rate=baud_rate,
             timeout=timeout,
             safety_config=safety_config,
+            motion_calibration=motion_calibration,
             serial_bus=self._bus,
         )
         self.focuser = OnStepFocuser(

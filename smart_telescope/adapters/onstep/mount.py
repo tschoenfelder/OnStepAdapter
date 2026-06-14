@@ -6,11 +6,12 @@ import logging
 import json
 import math
 import os
+import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 try:
     import serial
@@ -26,6 +27,12 @@ except ModuleNotFoundError:
 
 from ...ports.mount import MountPort, MountPosition, MountState
 from .firmware_proof import load_firmware_proof, validate_firmware_proof
+from .results import (
+    AxisMotionResult,
+    OnStepMotionCalibration,
+    SetParkPositionResult,
+    StoredParkPosition,
+)
 from .safety import (
     OnStepLimitError,
     OnStepLimits,
@@ -43,6 +50,42 @@ _MAX_GVP_ATTEMPTS = 3
 _GVP_RETRY_DELAY_S = 0.3
 _TRUSTED_TIME_SOURCES = {"gps", "gps_runtime", "ntp", "rtc", "manual", "user_confirmed", "controller_confirmed"}
 _ONSTEP_SITE_ARCMIN_READBACK_TOLERANCE_M = 1200.0
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _stored_park_to_dict(record: StoredParkPosition) -> dict[str, object]:
+    return {
+        "ra": record.ra,
+        "dec": record.dec,
+        "axis1_deg": record.axis1_deg,
+        "axis2_deg": record.axis2_deg,
+        "pier_side": record.pier_side,
+        "captured_at_utc": record.captured_at_utc,
+        "firmware_product": record.firmware_product,
+        "firmware_version": record.firmware_version,
+        "firmware_date": record.firmware_date,
+        "home_authority_state": record.home_authority_state,
+        "source": record.source,
+        "controller_readback_supported": record.controller_readback_supported,
+        "controller_match": record.controller_match,
+        "trusted": record.trusted,
+        "invalidation_reasons": list(record.invalidation_reasons),
+    }
 _ONSTEP_MERIDIAN_HALF_WIRE_MINUTE_H = 0.5 / 60.0
 
 
@@ -651,12 +694,15 @@ class OnStepMount(MountPort):
         timeout: float = 2.0,
         safety_config: OnStepSafetyConfig | None = None,
         serial_bus: OnStepSerialBus | None = None,
+        motion_calibration: OnStepMotionCalibration | None = None,
     ) -> None:
         self._port = port
         self._baud_rate = baud_rate
         self._timeout = timeout
         self._bus = serial_bus or OnStepSerialBus()
         self._safety_config = safety_config or _default_safety_config()
+        self._motion_calibration = motion_calibration
+        self._axis_motion_lock = threading.Lock()
         self._horizon: _HorizonProfile | None = None
         self._onstep_limits = OnStepLimits()
         self._onstep_extended_limits: dict[str, object] = {}
@@ -1448,33 +1494,263 @@ class OnStepMount(MountPort):
         axis2_deg: float = 0.0,
         confirmed_by_user: bool = False,
     ) -> dict[str, object]:
-        if not confirmed_by_user:
+        _log.warning(
+            "store_park_pose(axis1_deg=..., axis2_deg=...) is deprecated; "
+            "the adapter now captures the current logical axes itself"
+        )
+        result = self.set_park_position_from_current(
+            confirmed_safe=confirmed_by_user,
+            allow_at_home=False,
+        )
+        return {
+            "ok": result.ok,
+            "onstep_reply": result.onstep_reply,
+            "controller_updated": result.controller_updated,
+            "local_record_persisted": result.local_record_persisted,
+            "calibration_file": str(self._mechanical_calibration_path()),
+            "park_pose_confirmed": self._park_pose_confirmed,
+            "mechanical_axis_position": self._mechanical_axis_position,
+            "record": result.record,
+            "error": result.error,
+        }
+
+    def _park_record_from_payload(self, payload: dict[str, object]) -> StoredParkPosition | None:
+        record = payload.get("stored_park_position")
+        if isinstance(record, dict):
+            try:
+                invalidations = tuple(str(value) for value in record.get("invalidation_reasons", ()))
+                return StoredParkPosition(
+                    ra=float(record["ra"]),
+                    dec=float(record["dec"]),
+                    axis1_deg=_optional_float(record.get("axis1_deg")),
+                    axis2_deg=_optional_float(record.get("axis2_deg")),
+                    pier_side=_optional_str(record.get("pier_side")),
+                    captured_at_utc=str(record["captured_at_utc"]),
+                    firmware_product=_optional_str(record.get("firmware_product")),
+                    firmware_version=_optional_str(record.get("firmware_version")),
+                    firmware_date=_optional_str(record.get("firmware_date")),
+                    home_authority_state=str(record.get("home_authority_state", "unknown")),
+                    trusted=bool(record.get("trusted", False)),
+                    invalidation_reasons=invalidations,
+                )
+            except (KeyError, TypeError, ValueError):
+                return None
+
+        # Migrate the original mechanical-calibration record as a logical-axis-only
+        # PARK record. It cannot provide astronomical coordinates.
+        legacy = payload.get("park_pose")
+        if isinstance(legacy, dict):
+            return None
+        return None
+
+    def get_stored_park_position(self) -> StoredParkPosition | None:
+        payload = self._mechanical_calibration
+        if not isinstance(payload, dict):
+            return None
+        record = self._park_record_from_payload(payload)
+        if record is None:
+            return None
+
+        reasons = list(record.invalidation_reasons)
+        reasons.extend(self._mechanical_trust_invalidations)
+        if not self._home_confirmed:
+            reasons.append("home_authority_untrusted")
+        configured_observer = payload.get("observer")
+        if isinstance(configured_observer, dict):
+            if (
+                abs(float(configured_observer.get("lat", self._safety_config.observer_lat))
+                    - self._safety_config.observer_lat) > 1e-9
+                or abs(float(configured_observer.get("lon", self._safety_config.observer_lon))
+                       - self._safety_config.observer_lon) > 1e-9
+            ):
+                reasons.append("observer_configuration_changed")
+        stored_configuration = payload.get("mount_configuration")
+        current_configuration = {
+            "ha_east_limit_h": self._safety_config.ha_east_limit_h,
+            "ha_west_limit_h": self._safety_config.ha_west_limit_h,
+            "mechanical_axis1_min_deg": self._safety_config.mechanical_axis1_min_deg,
+            "mechanical_axis1_max_deg": self._safety_config.mechanical_axis1_max_deg,
+            "mechanical_axis2_min_deg": self._safety_config.mechanical_axis2_min_deg,
+            "mechanical_axis2_max_deg": self._safety_config.mechanical_axis2_max_deg,
+        }
+        if isinstance(stored_configuration, dict) and stored_configuration != current_configuration:
+            reasons.append("mount_configuration_changed")
+        if self._bus.is_open:
+            try:
+                current_firmware = self.read_onstep_firmware_identity()
+                if (
+                    record.firmware_product != _optional_str(current_firmware.get("product"))
+                    or record.firmware_version != _optional_str(current_firmware.get("version"))
+                    or record.firmware_date != _optional_str(current_firmware.get("date"))
+                ):
+                    reasons.append("firmware_identity_changed")
+            except Exception:
+                reasons.append("firmware_identity_unavailable")
+        reasons = list(dict.fromkeys(reasons))
+        return replace(record, trusted=not reasons, invalidation_reasons=tuple(reasons))
+
+    def _prepare_park_record_file(self, payload: dict[str, object]) -> tuple[Path, Path]:
+        path = self._mechanical_calibration_path()
+        if path is None:
             raise OnStepSafetyError(SafetyViolation(
-                reason="park_pose_store_confirmation_required",
-                command="store_park_pose",
+                reason="mechanical_calibration_file_required",
+                command="set_park_position_from_current",
                 severity=SafetySeverity.UNKNOWN,
-                recovery_hint="Confirm the mount is physically at mirror-safe PARK before storing park.",
+                recovery_hint="Configure mechanical_calibration_file before changing OnStep PARK.",
+            ))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pending = path.with_suffix(path.suffix + ".park-pending")
+        with pending.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        return path, pending
+
+    def set_park_position_from_current(
+        self,
+        *,
+        confirmed_safe: bool,
+        allow_at_home: bool = False,
+    ) -> SetParkPositionResult:
+        command = "set_park_position_from_current"
+        if not confirmed_safe:
+            raise OnStepSafetyError(SafetyViolation(
+                reason="park_position_confirmation_required",
+                command=command,
+                severity=SafetySeverity.UNKNOWN,
+                recovery_hint="The calling application must obtain physical PARK confirmation first.",
             ))
         if not self._home_confirmed:
             raise OnStepSafetyError(SafetyViolation(
-                reason="home_reference_required_before_store_park",
-                command="store_park_pose",
+                reason="home_reference_required_before_set_park",
+                command=command,
                 severity=SafetySeverity.UNKNOWN,
-                recovery_hint="Confirm physical HOME before calibrating the HOME-to-PARK pose.",
+                recovery_hint="Establish trusted HOME authority before changing PARK.",
             ))
-        reply = self._bus.send_fixed(":hQ#", size=1, timeout=2.0)
-        if reply != "1":
-            raise RuntimeError(f"OnStep rejected Set-Park :hQ# with reply {reply!r}")
+        authority_reasons = [
+            reason for reason in self._mechanical_trust_invalidations
+            if reason not in {"park_pose_not_confirmed"}
+        ]
+        if authority_reasons or self._safety_lock is not None:
+            raise OnStepSafetyError(SafetyViolation(
+                reason="home_authority_not_trusted_for_set_park",
+                command=command,
+                severity=SafetySeverity.UNKNOWN,
+                recovery_hint="Re-establish HOME authority and clear controller faults before changing PARK.",
+            ))
+
+        state = self.get_state()
+        decoded = dict(self._last_decoded_status or {})
+        if (decoded.get("at_home") or self._at_mechanical_home) and not allow_at_home:
+            raise OnStepSafetyError(SafetyViolation(
+                reason="set_park_at_home_refused",
+                command=command,
+                severity=SafetySeverity.BLOCKED,
+                recovery_hint="Move to the intended PARK pose or explicitly set allow_at_home=True.",
+            ))
+        if state == MountState.SLEWING or decoded.get("slewing"):
+            raise OnStepSafetyError(SafetyViolation(
+                reason="set_park_requires_stationary_mount",
+                command=command,
+                severity=SafetySeverity.BLOCKED,
+            ))
+        if state == MountState.TRACKING or decoded.get("tracking"):
+            raise OnStepSafetyError(SafetyViolation(
+                reason="set_park_requires_tracking_off",
+                command=command,
+                severity=SafetySeverity.BLOCKED,
+            ))
+        if decoded.get("at_limit") or decoded.get("park_failed"):
+            raise OnStepSafetyError(SafetyViolation(
+                reason="set_park_blocked_by_onstep_fault",
+                command=command,
+                severity=SafetySeverity.LIMIT_HIT,
+            ))
+
+        position = self.get_position()
+        axes = self.read_onstep_axis_position()
+        pier = self.read_pier_side()
+        firmware = self.read_onstep_firmware_identity()
+        captured_at = datetime.now(timezone.utc).isoformat()
+        authority = self._mechanical_position_authority()
+        record = StoredParkPosition(
+            ra=position.ra,
+            dec=position.dec,
+            axis1_deg=_optional_float(axes.get("axis1_deg")),
+            axis2_deg=_optional_float(axes.get("axis2_deg")),
+            pier_side=_optional_str(pier.get("value")),
+            captured_at_utc=captured_at,
+            firmware_product=_optional_str(firmware.get("product")),
+            firmware_version=_optional_str(firmware.get("version")),
+            firmware_date=_optional_str(firmware.get("date")),
+            home_authority_state=str(authority.get("state", "unknown")),
+            trusted=True,
+        )
         payload = {
-            "schema": "onstep-mechanical-calibration-v1",
-            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "schema": "onstep-mechanical-calibration-v2",
+            "updated_at_utc": captured_at,
             "home": {"axis1_deg": 0.0, "axis2_deg": 0.0},
-            "park_pose": {"axis1_deg": axis1_deg, "axis2_deg": axis2_deg},
-            "onstep_set_park_reply": reply,
+            "park_pose": {
+                "axis1_deg": record.axis1_deg,
+                "axis2_deg": record.axis2_deg,
+            },
+            "stored_park_position": _stored_park_to_dict(record),
+            "observer": {
+                "lat": self._safety_config.observer_lat,
+                "lon": self._safety_config.observer_lon,
+            },
+            "mount_configuration": {
+                "ha_east_limit_h": self._safety_config.ha_east_limit_h,
+                "ha_west_limit_h": self._safety_config.ha_west_limit_h,
+                "mechanical_axis1_min_deg": self._safety_config.mechanical_axis1_min_deg,
+                "mechanical_axis1_max_deg": self._safety_config.mechanical_axis1_max_deg,
+                "mechanical_axis2_min_deg": self._safety_config.mechanical_axis2_min_deg,
+                "mechanical_axis2_max_deg": self._safety_config.mechanical_axis2_max_deg,
+            },
+            "onstep_set_park_reply": None,
         }
-        self._store_mechanical_calibration(payload)
+        path, pending = self._prepare_park_record_file(payload)
+        reply = ""
+        try:
+            reply = self._bus.send_fixed(":hQ#", size=1, timeout=2.0)
+            if reply != "1":
+                pending.unlink(missing_ok=True)
+                return SetParkPositionResult(
+                    ok=False,
+                    controller_updated=False,
+                    local_record_persisted=False,
+                    onstep_reply=reply,
+                    record=None,
+                    error="onstep_rejected_set_park",
+                )
+            payload["onstep_set_park_reply"] = reply
+            with pending.open("w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2, sort_keys=True)
+                fh.write("\n")
+            try:
+                os.replace(pending, path)
+            except Exception as exc:
+                return SetParkPositionResult(
+                    ok=False,
+                    controller_updated=True,
+                    local_record_persisted=False,
+                    onstep_reply=reply,
+                    record=replace(
+                        record,
+                        trusted=False,
+                        invalidation_reasons=("local_record_persistence_failed",),
+                    ),
+                    error=f"local_record_persistence_failed:{exc}",
+                )
+        finally:
+            if reply != "1":
+                pending.unlink(missing_ok=True)
+
+        self._mechanical_calibration = payload
         self._park_pose_confirmed = True
-        self._mechanical_axis_position = {"axis1_deg": axis1_deg, "axis2_deg": axis2_deg}
+        self._mechanical_axis_position = {
+            "axis1_deg": float(record.axis1_deg or 0.0),
+            "axis2_deg": float(record.axis2_deg or 0.0),
+        }
         self._mechanical_trust_invalidations = [
             reason for reason in self._mechanical_trust_invalidations
             if (
@@ -1482,14 +1758,14 @@ class OnStepMount(MountPort):
                 and reason not in {"park_pose_not_confirmed", "no_persisted_startup_state"}
             )
         ]
-        self._persist_last_state(last_command="store_park_pose", force=True)
-        return {
-            "ok": True,
-            "onstep_reply": reply,
-            "calibration_file": str(self._mechanical_calibration_path()),
-            "park_pose_confirmed": self._park_pose_confirmed,
-            "mechanical_axis_position": self._mechanical_axis_position,
-        }
+        self._persist_last_state(last_command=command, force=True)
+        return SetParkPositionResult(
+            ok=True,
+            controller_updated=True,
+            local_record_persisted=True,
+            onstep_reply=reply,
+            record=self.get_stored_park_position(),
+        )
 
     def clear_mechanical_confirmations(self, reason: str = "operator_clear") -> None:
         self._home_confirmed = not self._safety_config.require_home_confirmation
@@ -1520,7 +1796,17 @@ class OnStepMount(MountPort):
 
     def read_system_clock_sanity(self) -> dict[str, object]:
         system_local = datetime.now().astimezone()
-        reference_path = Path(__file__).resolve().parents[2] / "app.py"
+        application_path = Path(__file__).resolve().parents[2] / "app.py"
+        reference_path = (
+            application_path
+            if application_path.is_file()
+            else Path(__file__).resolve()
+        )
+        reference_source = (
+            "smart_telescope_application"
+            if reference_path == application_path
+            else "installed_onstep_package"
+        )
         reference_mtime = None
         delta_s = None
         valid = system_local.year >= 2024
@@ -1530,15 +1816,14 @@ class OnStepMount(MountPort):
             delta_s = (system_local - reference_mtime).total_seconds()
             valid = valid and delta_s >= 0
         except OSError as exc:
-            valid = False
-            message = f"Could not verify Raspberry time against SmartTScope file timestamp: {exc}"
+            message = f"Could not verify Raspberry time against package file timestamp: {exc}"
         if message is None and not valid:
             if system_local.year < 2024:
                 message = "Raspberry clock is before 2024; wait for GPS/NTP or set time manually."
             else:
-                message = "Raspberry clock is older than the SmartTScope application file timestamp."
+                message = "Raspberry clock is older than the installed package file timestamp."
         if message is None:
-            message = "Raspberry clock passed SmartTScope timestamp sanity check."
+            message = "Raspberry clock passed package timestamp sanity check."
         trust_source = (self._safety_config.time_trust_source or "raspberry_plausible").lower()
         trusted = trust_source in _TRUSTED_TIME_SOURCES or abs(self._safety_config.time_offset_s) > 0.001
         confidence = "invalid" if not valid else ("trusted" if trusted else "plausible_not_trusted")
@@ -1550,6 +1835,7 @@ class OnStepMount(MountPort):
             "trusted_for_astronomy": bool(valid and trusted),
             "system_local": system_local.isoformat(timespec="seconds"),
             "reference_file": str(reference_path),
+            "reference_source": reference_source,
             "reference_mtime_local": (
                 reference_mtime.isoformat(timespec="seconds")
                 if reference_mtime is not None
@@ -2010,6 +2296,18 @@ class OnStepMount(MountPort):
                 severity=SafetySeverity.UNKNOWN,
                 recovery_hint="Confirm the GPS site/time before syncing OnStep.",
             ))
+        self._last_system_clock_check = self.read_system_clock_sanity()
+        if not bool(self._last_system_clock_check.get("valid")):
+            self._safety_lock = SafetyViolation(
+                reason="system_clock_invalid",
+                command="sync_onstep_time_location",
+                severity=SafetySeverity.UNKNOWN,
+                recovery_hint=(
+                    "Raspberry time is not sane, so it will not be copied into OnStep. "
+                    "Wait for GPS/NTP or set/check the Pi time first."
+                ),
+            )
+            raise OnStepSafetyError(self._safety_lock)
         source_utc = utc_datetime or self._active_now_utc()
         local_dt = source_utc.astimezone()
         date_reply = self._send(local_dt.strftime(":SC%m/%d/%y#"))
@@ -3478,14 +3776,10 @@ class OnStepMount(MountPort):
         return data
 
     def get_park_position(self) -> MountPosition | None:
-        try:
-            ra_str = self._send(":GpA#")
-            dec_str = self._send(":GpD#")
-            if not ra_str or not dec_str:
-                return None
-            return MountPosition(ra=_parse_ra(ra_str), dec=_parse_dec(dec_str))
-        except Exception:
+        record = self.get_stored_park_position()
+        if record is None:
             return None
+        return MountPosition(ra=record.ra, dec=record.dec)
 
     def disable_tracking_verified(
         self,
@@ -3584,18 +3878,354 @@ class OnStepMount(MountPort):
     def disable_tracking(self) -> bool:
         return bool(self.disable_tracking_verified().get("ok"))
 
+    def _normalized_axis_direction(
+        self,
+        *,
+        axis: Literal["ra", "dec"],
+        direction: str,
+    ) -> Literal["e", "w", "n", "s"]:
+        value = direction.lower().strip()
+        aliases = {
+            "east": "e",
+            "west": "w",
+            "north": "n",
+            "south": "s",
+        }
+        value = aliases.get(value, value)
+        allowed = {"e", "w"} if axis == "ra" else {"n", "s"}
+        if value not in allowed:
+            raise ValueError(f"invalid {axis.upper()} direction: {direction!r}")
+        return value  # type: ignore[return-value]
+
+    def _motion_rate(
+        self,
+        *,
+        mode: Literal["guide", "center"],
+        axis: Literal["ra", "dec"],
+        direction: Literal["e", "w", "n", "s"],
+    ) -> float | None:
+        if self._motion_calibration is None:
+            return None
+        rate = self._motion_calibration.rate_for(
+            mode=mode,
+            axis=axis,
+            direction=direction,
+        )
+        if not math.isfinite(rate) or rate <= 0.0:
+            raise ValueError(f"invalid {mode} {axis} {direction} calibration rate: {rate!r}")
+        return rate
+
+    def _project_axis_motion(
+        self,
+        *,
+        position: MountPosition,
+        axis: Literal["ra", "dec"],
+        signed_arcsec: float,
+    ) -> MountPosition:
+        if axis == "dec":
+            return MountPosition(
+                ra=position.ra,
+                dec=position.dec + signed_arcsec / 3600.0,
+            )
+        cos_dec = math.cos(math.radians(position.dec))
+        if abs(cos_dec) < 0.01:
+            raise OnStepSafetyError(SafetyViolation(
+                reason="ra_offset_projection_unstable_near_pole",
+                command="move_ra",
+                severity=SafetySeverity.BLOCKED,
+                current_value=position.dec,
+                recovery_hint="Use timed guiding with direct image feedback near the celestial pole.",
+            ))
+        ra_delta_h = signed_arcsec / (15.0 * 3600.0 * cos_dec)
+        return MountPosition(
+            ra=(position.ra + ra_delta_h) % 24.0,
+            dec=position.dec,
+        )
+
+    def _axis_motion(
+        self,
+        *,
+        axis: Literal["ra", "dec"],
+        direction: str,
+        duration_ms: int,
+        mode: Literal["guide", "center"],
+        requested_arcsec: float | None,
+        cancel_check: Callable[[], bool] | None,
+    ) -> AxisMotionResult:
+        if mode not in {"guide", "center"}:
+            raise ValueError(f"invalid axis-motion mode: {mode!r}")
+        d = self._normalized_axis_direction(axis=axis, direction=direction)
+        duration = int(duration_ms)
+        maximum = 16399 if mode == "guide" else 120000
+        if duration < 20 or duration > maximum:
+            raise ValueError(f"{mode} duration must be between 20 and {maximum} ms")
+        if not self._axis_motion_lock.acquire(blocking=False):
+            raise OnStepSafetyError(SafetyViolation(
+                reason="axis_motion_already_in_progress",
+                command=f"move_{axis}_timed",
+                severity=SafetySeverity.BLOCKED,
+            ))
+
+        commands: list[str] = []
+        before: MountPosition | None = None
+        tracking_before = False
+        cancelled = False
+        hard_limit_violation: SafetyViolation | None = None
+        rate_selected = False
+        motion_started = False
+        try:
+            preflight = self.motion_safety_preflight(
+                command=f"move_{axis}_{mode}",
+                normal_motion=True,
+                margin_deg=0.25,
+            )
+            if preflight.get("motion_refused"):
+                raise OnStepSafetyError(SafetyViolation(
+                    reason=str(preflight.get("motion_refusal_reason") or "axis_motion_preflight_failed"),
+                    command=f"move_{axis}_{mode}",
+                    severity=SafetySeverity.BLOCKED,
+                    recovery_hint="Resolve the fresh OnStep motion-preflight blockers before correction.",
+                ))
+            if preflight.get("at_home"):
+                raise OnStepSafetyError(SafetyViolation(
+                    reason="axis_motion_refused_at_home",
+                    command=f"move_{axis}_{mode}",
+                    severity=SafetySeverity.BLOCKED,
+                    recovery_hint="Acquire a real astronomical target before guide or centering corrections.",
+                ))
+            tracking_before = bool(preflight.get("tracking"))
+            if mode == "guide" and not tracking_before:
+                raise OnStepSafetyError(SafetyViolation(
+                    reason="guide_requires_tracking",
+                    command=f"move_{axis}_guide",
+                    severity=SafetySeverity.BLOCKED,
+                ))
+            logical = preflight.get("logical_position")
+            if not isinstance(logical, dict):
+                raise OnStepSafetyError(SafetyViolation(
+                    reason="logical_position_unavailable",
+                    command=f"move_{axis}_{mode}",
+                    severity=SafetySeverity.UNKNOWN,
+                ))
+            before = MountPosition(ra=float(logical["ra"]), dec=float(logical["dec"]))
+
+            rate = self._motion_rate(mode=mode, axis=axis, direction=d)
+            projected_arcsec = requested_arcsec
+            if projected_arcsec is None and rate is not None:
+                sign = 1.0 if d in {"e", "n"} else -1.0
+                projected_arcsec = sign * rate * duration / 1000.0
+            if projected_arcsec is not None:
+                target = self._project_axis_motion(
+                    position=before,
+                    axis=axis,
+                    signed_arcsec=projected_arcsec,
+                )
+                target_validation = self.validate_target(target.ra, target.dec, margin_deg=0.25)
+                if not target_validation.get("allowed"):
+                    violation = target_validation.get("violation")
+                    reason = (
+                        str(violation.get("reason"))
+                        if isinstance(violation, dict)
+                        else "projected_axis_motion_unsafe"
+                    )
+                    raise OnStepSafetyError(SafetyViolation(
+                        reason=reason,
+                        command=f"move_{axis}_{mode}",
+                        severity=SafetySeverity.BLOCKED,
+                        recovery_hint="Reduce or reverse the requested correction.",
+                    ))
+
+            rate_command = ":RG#" if mode == "guide" else ":RC#"
+            self._bus.write_no_reply(rate_command, timeout=0.5)
+            commands.append(rate_command)
+            rate_selected = True
+            if mode == "guide":
+                move_command = f":Mg{d}{duration:04d}#"
+            else:
+                move_command = f":M{d}#"
+            self._bus.write_no_reply(move_command, timeout=0.5)
+            commands.append(move_command)
+            motion_started = True
+
+            deadline = time.monotonic() + duration / 1000.0
+            next_safety_poll = time.monotonic() + 0.25
+            while time.monotonic() < deadline:
+                if cancel_check is not None and cancel_check():
+                    cancelled = True
+                    break
+                now = time.monotonic()
+                if now >= next_safety_poll:
+                    live = self.motion_safety_preflight(
+                        command=f"move_{axis}_{mode}_live",
+                        normal_motion=False,
+                        margin_deg=0.0,
+                    )
+                    if live.get("tracking_stop_required") or live.get("hard_limit_reached"):
+                        hard_limit_violation = SafetyViolation(
+                            reason="axis_motion_reached_hard_limit",
+                            command=f"move_{axis}_{mode}",
+                            severity=SafetySeverity.LIMIT_HIT,
+                            recovery_hint="Only explicit recovery motion toward safety remains allowed.",
+                        )
+                        break
+                    next_safety_poll = now + 0.25
+                time.sleep(min(0.05, max(0.0, deadline - now)))
+        finally:
+            if motion_started:
+                try:
+                    stop_command = f":Q{d}#"
+                    self._bus.write_no_reply(stop_command, timeout=0.5)
+                    commands.append(stop_command)
+                except Exception:
+                    pass
+            if hard_limit_violation is not None:
+                try:
+                    self._bus.send_fixed(":Td#", size=1, timeout=0.5)
+                    commands.append(":Td#")
+                except Exception:
+                    pass
+                self._bus.write_bypass(b":Q#")
+                commands.append(":Q#")
+            if rate_selected:
+                try:
+                    self._bus.write_no_reply(":RG#", timeout=0.5)
+                    commands.append(":RG#")
+                except Exception:
+                    pass
+            self._axis_motion_lock.release()
+
+        if hard_limit_violation is not None:
+            raise OnStepLimitError(hard_limit_violation)
+        assert before is not None
+        try:
+            after = self.get_position()
+            after_state = self.get_state()
+            tracking_after: bool | None = (
+                after_state == MountState.TRACKING
+                or bool(self._last_decoded_status.get("tracking"))
+            )
+        except Exception:
+            after = None
+            tracking_after = None
+        result = AxisMotionResult(
+            ok=not cancelled,
+            axis=axis,
+            direction=d,
+            mode=mode,
+            requested_arcsec=requested_arcsec,
+            estimated_duration_ms=duration,
+            commands_sent=tuple(commands),
+            before_ra=before.ra,
+            before_dec=before.dec,
+            after_ra=after.ra if after is not None else None,
+            after_dec=after.dec if after is not None else None,
+            tracking_before=tracking_before,
+            tracking_after=tracking_after,
+            cancelled=cancelled,
+        )
+        self._persist_last_state(
+            last_command=f"move_{axis}_{mode}_{d}_{duration}ms",
+            force=True,
+        )
+        return result
+
+    def move_ra_timed(
+        self,
+        direction: Literal["east", "west", "e", "w"],
+        duration_ms: int,
+        *,
+        mode: Literal["guide", "center"] = "center",
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> AxisMotionResult:
+        return self._axis_motion(
+            axis="ra",
+            direction=direction,
+            duration_ms=duration_ms,
+            mode=mode,
+            requested_arcsec=None,
+            cancel_check=cancel_check,
+        )
+
+    def move_dec_timed(
+        self,
+        direction: Literal["north", "south", "n", "s"],
+        duration_ms: int,
+        *,
+        mode: Literal["guide", "center"] = "center",
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> AxisMotionResult:
+        return self._axis_motion(
+            axis="dec",
+            direction=direction,
+            duration_ms=duration_ms,
+            mode=mode,
+            requested_arcsec=None,
+            cancel_check=cancel_check,
+        )
+
+    def move_ra(
+        self,
+        offset_arcsec: float,
+        *,
+        mode: Literal["guide", "center"] = "center",
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> AxisMotionResult:
+        if not math.isfinite(offset_arcsec) or offset_arcsec == 0.0:
+            raise ValueError("RA offset_arcsec must be finite and non-zero")
+        direction = "e" if offset_arcsec > 0 else "w"
+        rate = self._motion_rate(mode=mode, axis="ra", direction=direction)
+        if rate is None:
+            raise ValueError("motion calibration is required for angular RA offsets")
+        duration = round(abs(offset_arcsec) / rate * 1000.0)
+        return self._axis_motion(
+            axis="ra",
+            direction=direction,
+            duration_ms=duration,
+            mode=mode,
+            requested_arcsec=float(offset_arcsec),
+            cancel_check=cancel_check,
+        )
+
+    def move_dec(
+        self,
+        offset_arcsec: float,
+        *,
+        mode: Literal["guide", "center"] = "center",
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> AxisMotionResult:
+        if not math.isfinite(offset_arcsec) or offset_arcsec == 0.0:
+            raise ValueError("DEC offset_arcsec must be finite and non-zero")
+        direction = "n" if offset_arcsec > 0 else "s"
+        rate = self._motion_rate(mode=mode, axis="dec", direction=direction)
+        if rate is None:
+            raise ValueError("motion calibration is required for angular DEC offsets")
+        duration = round(abs(offset_arcsec) / rate * 1000.0)
+        return self._axis_motion(
+            axis="dec",
+            direction=direction,
+            duration_ms=duration,
+            mode=mode,
+            requested_arcsec=float(offset_arcsec),
+            cancel_check=cancel_check,
+        )
+
     def guide(self, direction: str, duration_ms: int) -> bool:
         d = direction.lower()
         if d not in ("n", "s", "e", "w"):
             return False
-        pos = self.get_position()
-        self._check_target_safe("guide", pos.ra, pos.dec, margin_deg=0.25)
-        ms = max(1, min(9999, duration_ms))
+        axis: Literal["ra", "dec"] = "ra" if d in {"e", "w"} else "dec"
         try:
-            self._bus.write_no_reply(f":Mg{d}{ms:04d}#", timeout=0.5)
-        except TimeoutError as exc:
-            raise RuntimeError("OnStep serial bus busy during guide pulse") from exc
-        return True
+            result = self._axis_motion(
+                axis=axis,
+                direction=d,
+                duration_ms=duration_ms,
+                mode="guide",
+                requested_arcsec=None,
+                cancel_check=None,
+            )
+        except (ValueError, OnStepSafetyError):
+            return False
+        return result.ok
 
     def recovery_pulse(self, direction: str, duration_ms: int) -> bool:
         self._raise_if_locked("recovery_pulse", allow_clock_lock=True)

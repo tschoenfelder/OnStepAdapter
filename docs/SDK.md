@@ -7,7 +7,7 @@ adapter instance.
 ## Install
 
 ```bash
-python -m pip install onstep_adapter-0.2.0-py3-none-any.whl
+python -m pip install onstep_adapter-0.3.0-py3-none-any.whl
 ```
 
 Python 3.13 or newer and `pyserial>=3.5` are required.
@@ -69,6 +69,59 @@ The application workflow:
 
 OnStep firmware remains the final protection layer if the host application
 fails.
+
+## PARK Records
+
+`set_park_position_from_current(confirmed_safe=True)` sends documented OnStep
+Set-Park `:hQ#` only after verifying trusted HOME authority, stationary and
+non-tracking state, no limit/fault, and a writable persistent calibration
+destination. `allow_at_home=False` prevents accidentally replacing PARK with
+HOME.
+
+OnStep has no documented stored-PARK readback command.
+`get_stored_park_position()` therefore returns the SDK capture made when it
+last successfully sent `:hQ#`, including source, trust, and invalidation
+fields. It does not claim independent controller verification.
+
+## Bounded Axis Corrections
+
+- `move_ra_timed()` and `move_dec_timed()` support safe manual nudges.
+- `move_ra()` and `move_dec()` accept signed on-image arcseconds and require
+  `OnStepMotionCalibration`.
+- Guide mode uses `:RG#` and native `:Mg...#` pulse guiding.
+- Center mode uses `:RC#`, directional movement, and a guaranteed matching
+  direction stop.
+- Tracking remains active and guide rate is restored after centering.
+- Calls are serialized and bounded; no indefinite public start/stop API exists.
+- Angular movement is estimated and must be verified from a new camera frame.
+
+## Supervised Motion Validation
+
+Small guide and center corrections:
+
+```bash
+python -m onstep_adapter.tools.axis_motion_smoke \
+  --port /dev/ttyUSB_ONSTEP0 \
+  --observer-lat 50.336 \
+  --observer-lon 8.533 \
+  --observer-alt-m 304 \
+  --confirm-time-location-sync
+```
+
+Visually observable independent coordinate movement:
+
+```bash
+python -m onstep_adapter.tools.coordinate_axis_smoke \
+  --port /dev/ttyUSB_ONSTEP0 \
+  --observer-lat 50.336 \
+  --observer-lon 8.533 \
+  --observer-alt-m 304 \
+  --confirm-time-location-sync
+```
+
+The second command moves RA `+1 h`, DEC `+10 degrees`, RA `-1 h`, and DEC
+`-10 degrees`, then requires final confirmation before HOME-to-PARK. Both
+commands passed on the physically tested Terrans OnStep V4.
 
 ## Cleanup
 

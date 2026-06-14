@@ -2,18 +2,28 @@ from onstep_adapter import (
     OnStepClient,
     OnStepFocuser,
     OnStepMount,
+    OnStepMotionCalibration,
     OnStepSafetyConfig,
     OnStepSafetyError,
     __version__,
 )
+import onstep_adapter
 from smart_telescope.adapters.onstep.mount import _counterweight_safety_state
 
 
 def test_public_release_surface() -> None:
-    assert __version__ == "0.2.0"
+    assert __version__ == "0.3.0"
     assert OnStepClient is not None
     assert OnStepMount is not None
     assert OnStepFocuser is not None
+    assert OnStepMotionCalibration is not None
+
+
+def test_public_surface_does_not_depend_on_compatibility_package_exports() -> None:
+    source = open(onstep_adapter.__file__, encoding="utf-8").read()
+
+    assert "from smart_telescope.adapters.onstep import" not in source
+    assert "from smart_telescope.adapters.onstep.results import" in source
     assert OnStepSafetyError is not None
 
 
@@ -57,4 +67,3 @@ def test_home_and_park_are_not_counterweight_limit_decisions() -> None:
 
     assert result["applicable"] is False
     assert result["hard_limit_reached"] is False
-

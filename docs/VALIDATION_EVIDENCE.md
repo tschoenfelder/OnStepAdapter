@@ -1,4 +1,4 @@
-# Validation Evidence For 0.2.0
+# Validation Evidence For 0.3.0
 
 ## Meridian Workflow
 
@@ -51,10 +51,44 @@ proven=True physically_safe=True
 PASS: unattended tracking firmware safeguard is proven
 ```
 
+## Independent RA And DEC Motion
+
+The `0.3.0` motion APIs were physically exercised on June 14, 2026.
+
+The bounded correction smoke test:
+
+- routed PARK to HOME and acquired a safe target;
+- executed center-rate RA east/west and DEC north/south corrections;
+- executed guide-rate RA east and DEC north pulses;
+- sent the matching directional stop after every correction;
+- preserved tracking throughout;
+- returned through HOME to live PARK.
+
+The larger coordinate-path test then proved visually observable independent
+coordinate movement:
+
+```text
+initial:       RA=12.528611h DEC=20deg
+RA increase:   RA=13.528611h DEC=20deg
+DEC increase:  RA=13.528611h DEC=30deg
+RA decrease:   RA=12.528611h DEC=30deg
+DEC decrease:  RA=12.528611h DEC=20deg
+```
+
+Every leg stabilized at the requested target within tolerance. The final
+target matched the initial target, and operator confirmation authorized the
+final HOME-to-PARK route. The command ended with:
+
+```text
+PASS: independent RA/DEC coordinate path completed and final state PARKED.
+```
+
+Before movement, both commands verified Raspberry/OnStep civil time, observer
+location, and sidereal time while PARKED.
+
 ## Interpretation
 
 The stock Axis-1 fallback is much later than the normal operational stop. It
 is accepted only as final crash prevention for the exact validated rig. Normal
 operation still requests the meridian flip near `+2 degrees` and stops around
 `+5 degrees` while the host application is alive.
-

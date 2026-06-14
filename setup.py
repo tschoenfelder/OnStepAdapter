@@ -11,6 +11,11 @@ from setuptools.command.build_py import build_py
 class SelectiveBuildPy(build_py):
     _allowed_modules = {
         "onstep_adapter": {"__init__"},
+        "onstep_adapter.tools": {
+            "__init__",
+            "axis_motion_smoke",
+            "coordinate_axis_smoke",
+        },
         "smart_telescope": {"__init__"},
         "smart_telescope.adapters": {"__init__"},
         "smart_telescope.adapters.onstep": {
