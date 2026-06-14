@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Callable
+from typing import Callable, Literal
 
 
 class MountState(Enum):
@@ -123,6 +123,52 @@ class MountPort(ABC):
     def get_park_position(self) -> MountPosition | None:
         """Return the stored park position, or None if the adapter doesn't support it."""
         return None
+
+    def get_stored_park_position(self) -> object | None:
+        """Return the adapter's provenance-bearing PARK record, if available."""
+        return None
+
+    def set_park_position_from_current(
+        self,
+        *,
+        confirmed_safe: bool,
+        allow_at_home: bool = False,
+    ) -> object:
+        raise NotImplementedError("setting PARK from current position is not supported")
+
+    def move_ra_timed(
+        self,
+        direction: Literal["east", "west", "e", "w"],
+        duration_ms: int,
+        *,
+        mode: Literal["guide", "center"] = "center",
+    ) -> object:
+        raise NotImplementedError("bounded RA motion is not supported")
+
+    def move_dec_timed(
+        self,
+        direction: Literal["north", "south", "n", "s"],
+        duration_ms: int,
+        *,
+        mode: Literal["guide", "center"] = "center",
+    ) -> object:
+        raise NotImplementedError("bounded DEC motion is not supported")
+
+    def move_ra(
+        self,
+        offset_arcsec: float,
+        *,
+        mode: Literal["guide", "center"] = "center",
+    ) -> object:
+        raise NotImplementedError("calibrated RA motion is not supported")
+
+    def move_dec(
+        self,
+        offset_arcsec: float,
+        *,
+        mode: Literal["guide", "center"] = "center",
+    ) -> object:
+        raise NotImplementedError("calibrated DEC motion is not supported")
 
     @abstractmethod
     def disconnect(self) -> None: ...

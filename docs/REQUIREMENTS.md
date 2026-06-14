@@ -48,3 +48,28 @@
 - Unattended operation may be allowed only when the configured firmware
   fallback has a valid proof for the current controller and rig.
 
+## PARK Record Authority
+
+- Setting PARK shall require caller confirmation, trusted HOME authority,
+  stationary and non-tracking state, no OnStep limit/fault, and writable local
+  persistence.
+- Setting PARK at HOME shall be refused unless the caller explicitly passes
+  `allow_at_home=True`.
+- The adapter shall capture current RA/DEC, logical axes, pier side, firmware
+  identity, and HOME authority before sending `:hQ#`.
+- The adapter shall report controller-updated/local-persistence-failed as a
+  partial outcome and shall not invite a blind retry.
+- Because OnStep exposes no documented stored-PARK readback, the local PARK
+  record shall state that controller matching is unverifiable.
+
+## RA/DEC Corrections
+
+- RA and DEC corrections shall be independent, serialized, bounded, and
+  automatically stopped.
+- Positive on-image RA means east; positive DEC means north.
+- Guide correction requires tracking and uses native pulse guiding.
+- Center correction may overlay tracking and shall preserve its prior state.
+- Angular corrections require direction-specific application-supplied
+  calibration and shall be marked as requiring image verification.
+- Fresh motion safety preflight and inclusive hard-limit enforcement apply to
+  guide and center corrections.

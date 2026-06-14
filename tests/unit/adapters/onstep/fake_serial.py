@@ -66,6 +66,7 @@ class FakeOnStepSerial:
         flip_on_positive_ha_goto: bool = False,
         dual_pier_west_ha_stop: bool = False,
         firmware_version: str = "10.19d",
+        set_park_reply: str = "1",
     ) -> None:
         self._state = initial_state
         self._ra = initial_ra
@@ -101,6 +102,8 @@ class FakeOnStepSerial:
         self._flip_on_positive_ha_goto = bool(flip_on_positive_ha_goto)
         self._dual_pier_west_ha_stop = bool(dual_pier_west_ha_stop)
         self._firmware_version = firmware_version
+        self._set_park_reply = set_park_reply
+        self._selected_rate = "guide"
         self._preferred_pier_policy = "B"
         self._pending_opposite_pier_goto = False
         self._pending_forced_pier_side: str | None = None
@@ -324,7 +327,7 @@ class FakeOnStepSerial:
             return b"1"
 
         if cmd == ":hQ#":
-            return b"1"
+            return self._set_park_reply.encode()
 
         if cmd == ":hC#":
             self._state = "home"
@@ -412,6 +415,29 @@ class FakeOnStepSerial:
         if cmd == ":Q#":
             if self._state in ("slewing", "tracking"):
                 self._state = "unparked"
+            return b""
+
+        if cmd == ":RG#":
+            self._selected_rate = "guide"
+            return b""
+
+        if cmd == ":RC#":
+            self._selected_rate = "center"
+            return b""
+
+        if cmd in {":Me#", ":Mw#", ":Mn#", ":Ms#"}:
+            direction = cmd[2:3].lower()
+            if direction == "n":
+                self._dec += 0.002
+            elif direction == "s":
+                self._dec -= 0.002
+            elif direction == "e":
+                self._ra = (self._ra + 0.0006) % 24.0
+            elif direction == "w":
+                self._ra = (self._ra - 0.0006) % 24.0
+            return b""
+
+        if cmd in {":Qe#", ":Qw#", ":Qn#", ":Qs#"}:
             return b""
 
         if cmd.startswith(":Mg"):
