@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 
     serial = _MissingSerialModule()  # type: ignore[assignment]
 
-from ...ports.mount import MountPort, MountPosition, MountState
+from .ports.mount import MountPort, MountPosition, MountState
 from .firmware_proof import load_firmware_proof, validate_firmware_proof
 from .results import (
     AxisMotionResult,
@@ -1803,7 +1803,7 @@ class OnStepMount(MountPort):
             else Path(__file__).resolve()
         )
         reference_source = (
-            "smart_telescope_application"
+            "host_application"
             if reference_path == application_path
             else "installed_onstep_package"
         )

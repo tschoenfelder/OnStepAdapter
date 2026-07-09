@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 
-from smart_telescope.adapters.onstep.serial_bus import OnStepSerialBus
+from onstep_adapter.serial_bus import OnStepSerialBus
 
 
 class _BlockingSerial:

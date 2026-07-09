@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "onstep-adapter"
-version = "0.3.0"
+version = "0.3.1"
 description = "Shared-connection Python adapter for OnStep mount and focuser control"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -28,10 +28,7 @@ Issues = "https://github.com/tschoenfelder/OnStepAdapter/issues"
 packages = [
   "onstep_adapter",
   "onstep_adapter.tools",
-  "smart_telescope",
-  "smart_telescope.adapters",
-  "smart_telescope.adapters.onstep",
-  "smart_telescope.ports",
+  "onstep_adapter.ports",
 ]
 
 [tool.pytest.ini_options]

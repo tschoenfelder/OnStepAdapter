@@ -1,10 +1,10 @@
-from smart_telescope.adapters.onstep.firmware_proof import (
+from onstep_adapter.firmware_proof import (
     PROOF_SCHEMA,
     validate_firmware_proof,
     write_firmware_proof,
 )
-from smart_telescope.adapters.onstep.mount import OnStepMount
-from smart_telescope.adapters.onstep.safety import OnStepSafetyConfig
+from onstep_adapter.mount import OnStepMount
+from onstep_adapter.safety import OnStepSafetyConfig
 
 from .fake_serial import FakeOnStepSerial
 

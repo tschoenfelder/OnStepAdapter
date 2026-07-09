@@ -6,8 +6,8 @@ from unittest.mock import patch
 import pytest
 
 from onstep_adapter import OnStepMotionCalibration, OnStepSafetyError
-from smart_telescope.adapters.onstep.mount import OnStepMount
-from smart_telescope.adapters.onstep.safety import OnStepLimitError, OnStepSafetyConfig
+from onstep_adapter.mount import OnStepMount
+from onstep_adapter.safety import OnStepLimitError, OnStepSafetyConfig
 
 from .fake_serial import FakeOnStepSerial
 

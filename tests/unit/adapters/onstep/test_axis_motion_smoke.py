@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from onstep_adapter.tools.axis_motion_smoke import _time_location_preflight
-from smart_telescope.adapters.onstep.mount import OnStepMount
-from smart_telescope.adapters.onstep.safety import OnStepSafetyConfig
+from onstep_adapter.mount import OnStepMount
+from onstep_adapter.safety import OnStepSafetyConfig
 
 
 def test_time_location_preflight_requires_all_three_authorities() -> None:
@@ -58,6 +58,6 @@ def test_system_clock_sanity_uses_installed_package_when_app_is_absent(tmp_path)
 
     assert result["valid"] is True
     assert result["reference_source"] in {
-        "smart_telescope_application",
+        "host_application",
         "installed_onstep_package",
     }

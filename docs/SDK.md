@@ -7,8 +7,12 @@ adapter instance.
 ## Install
 
 ```bash
-python -m pip install onstep_adapter-0.3.0-py3-none-any.whl
+python -m pip install onstep_adapter-0.3.1-py3-none-any.whl
 ```
+
+The wheel owns only the `onstep_adapter` namespace. It intentionally does not
+ship `smart_telescope/*` modules, which avoids import collisions with a real
+SmartTScope installation.
 
 Python 3.13 or newer and `pyserial>=3.5` are required.
 

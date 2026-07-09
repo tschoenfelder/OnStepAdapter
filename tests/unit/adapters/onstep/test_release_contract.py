@@ -8,23 +8,35 @@ from onstep_adapter import (
     __version__,
 )
 import onstep_adapter
-from smart_telescope.adapters.onstep.mount import _counterweight_safety_state
+from onstep_adapter.mount import _counterweight_safety_state
+from pathlib import Path
 
 
 def test_public_release_surface() -> None:
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.3.1"
     assert OnStepClient is not None
     assert OnStepMount is not None
     assert OnStepFocuser is not None
     assert OnStepMotionCalibration is not None
 
 
-def test_public_surface_does_not_depend_on_compatibility_package_exports() -> None:
+def test_public_surface_uses_only_onstep_adapter_namespace() -> None:
     source = open(onstep_adapter.__file__, encoding="utf-8").read()
 
-    assert "from smart_telescope.adapters.onstep import" not in source
-    assert "from smart_telescope.adapters.onstep.results import" in source
+    assert "smart_telescope" not in source
+    assert "from onstep_adapter.results import" in source
     assert OnStepSafetyError is not None
+
+
+def test_standalone_packaging_does_not_ship_smart_telescope_namespace() -> None:
+    root = Path(__file__).resolve().parents[4]
+    pyproject = root / "pyproject.toml"
+    setup = root / "setup.py"
+
+    for path in (pyproject, setup):
+        text = path.read_text(encoding="utf-8")
+        assert '"smart_telescope' not in text
+        assert "smart_telescope." not in text
 
 
 def test_home_confirmation_is_required_by_default() -> None:

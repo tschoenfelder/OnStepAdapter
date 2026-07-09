@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from onstep_adapter.tools.coordinate_axis_smoke import _coordinate_path
-from smart_telescope.ports.mount import MountPosition
+from onstep_adapter.ports.mount import MountPosition
 
 
 def test_coordinate_path_changes_one_axis_per_leg_and_returns() -> None:

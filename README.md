@@ -8,19 +8,19 @@ The distribution is named `onstep-adapter`; applications import it as
 
 ## Install
 
-Download `onstep_adapter-0.3.0-py3-none-any.whl` from the
-[v0.3.0 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.0),
+Download `onstep_adapter-0.3.1-py3-none-any.whl` from the
+[v0.3.1 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.1),
 then install it:
 
 ```bash
-python -m pip install ./onstep_adapter-0.3.0-py3-none-any.whl
+python -m pip install ./onstep_adapter-0.3.1-py3-none-any.whl
 ```
 
 Or install directly from the release URL:
 
 ```bash
 python -m pip install \
-  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.0/onstep_adapter-0.3.0-py3-none-any.whl
+  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.1/onstep_adapter-0.3.1-py3-none-any.whl
 ```
 
 Verify the import:
@@ -157,8 +157,9 @@ python -m pytest
 python -m build
 ```
 
-The wheel is pure Python and preserves the historical
-`smart_telescope.adapters.onstep` imports for SmartTScope compatibility.
+The wheel is pure Python and contains only the `onstep_adapter` namespace. It
+does not ship a top-level `smart_telescope` package, so it can be installed
+beside SmartTScope without shadowing SmartTScope's own implementation.
 
 ## License
 

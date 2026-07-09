@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 
 from onstep_adapter import OnStepClient, OnStepMotionCalibration
-from smart_telescope.adapters.onstep.serial_bus import OnStepSerialBus
+from onstep_adapter.serial_bus import OnStepSerialBus
 
 
 def _bus() -> MagicMock:
