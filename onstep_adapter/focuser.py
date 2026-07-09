@@ -12,7 +12,7 @@ import json
 import time
 from pathlib import Path
 
-from ...ports.focuser import FocuserPort
+from .ports.focuser import FocuserPort
 from .safety import OnStepSafetyConfig, OnStepSafetyError, SafetyViolation
 from .results import FocuserMoveResult, FocuserStatus
 from .serial_bus import OnStepSerialBus

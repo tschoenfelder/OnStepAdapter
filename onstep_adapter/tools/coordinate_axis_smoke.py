@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from onstep_adapter import OnStepClient, OnStepSafetyConfig
-from smart_telescope.ports.mount import MountPosition, MountState
+from onstep_adapter.ports.mount import MountPosition, MountState
 
 from .axis_motion_smoke import (
     _confirm,

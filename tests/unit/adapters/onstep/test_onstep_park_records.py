@@ -6,8 +6,8 @@ from unittest.mock import patch
 import pytest
 
 from onstep_adapter import OnStepSafetyError
-from smart_telescope.adapters.onstep.mount import OnStepMount
-from smart_telescope.adapters.onstep.safety import OnStepSafetyConfig
+from onstep_adapter.mount import OnStepMount
+from onstep_adapter.safety import OnStepSafetyConfig
 
 from .fake_serial import FakeOnStepSerial
 
@@ -118,7 +118,7 @@ def test_set_park_reports_controller_updated_when_final_commit_fails(tmp_path) -
             raise OSError("disk failure")
         return real_replace(source, destination)
 
-    with patch("smart_telescope.adapters.onstep.mount.os.replace", side_effect=fail_only_final):
+    with patch("onstep_adapter.mount.os.replace", side_effect=fail_only_final):
         result = mount.set_park_position_from_current(confirmed_safe=True)
 
     assert result.ok is False

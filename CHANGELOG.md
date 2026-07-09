@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 - 2026-07-10
+
+- Fixed standalone wheel packaging so it ships only the `onstep_adapter`
+  namespace.
+- Removed the top-level `smart_telescope` package from the distribution to
+  avoid collisions with SmartTScope installations.
+- Updated tests and documentation to import SDK internals from
+  `onstep_adapter.*`.
+
 ## 0.3.0 - 2026-06-14
 
 - Added provenance-bearing local PARK records and safe `:hQ#` transactions.

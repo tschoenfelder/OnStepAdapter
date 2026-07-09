@@ -18,7 +18,7 @@ from __future__ import annotations
 import contextlib
 from datetime import datetime, timedelta, timezone
 
-from smart_telescope.adapters.onstep.mount import (
+from onstep_adapter.mount import (
     _format_dec,
     _format_ra,
     _lst_hours,

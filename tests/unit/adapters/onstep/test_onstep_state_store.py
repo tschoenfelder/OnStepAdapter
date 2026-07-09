@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from smart_telescope.adapters.onstep.state_store import OnStepStateStore
+from onstep_adapter.state_store import OnStepStateStore
 
 
 def test_state_store_writes_and_loads_json(tmp_path) -> None:
