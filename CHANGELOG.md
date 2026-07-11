@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 - 2026-07-11
+
+- Actively disable unrequested OnStep tracking observed after unpark or status
+  polling when the adapter has no active caller tracking request.
+- Make `unpark()` guarantee an unparked, non-tracking postcondition.
+- Add public location helpers for great-circle distance and LX200 arcminute
+  site-coordinate rounding.
+- Document tracking authority and realistic OnStep site readback comparison.
+
 ## 0.3.1 - 2026-07-10
 
 - Fixed standalone wheel packaging so it ships only the `onstep_adapter`

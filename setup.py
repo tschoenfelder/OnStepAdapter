@@ -16,6 +16,7 @@ class SelectiveBuildPy(build_py):
             "focuser",
             "firmware_proof",
             "mount",
+            "location",
             "results",
             "safety",
             "serial_bus",
