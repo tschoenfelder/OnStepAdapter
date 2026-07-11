@@ -7,7 +7,7 @@ adapter instance.
 ## Install
 
 ```bash
-python -m pip install onstep_adapter-0.3.1-py3-none-any.whl
+python -m pip install onstep_adapter-0.3.2-py3-none-any.whl
 ```
 
 The wheel owns only the `onstep_adapter` namespace. It intentionally does not
@@ -15,6 +15,35 @@ ship `smart_telescope/*` modules, which avoids import collisions with a real
 SmartTScope installation.
 
 Python 3.13 or newer and `pyserial>=3.5` are required.
+
+## Unrequested Tracking
+
+OnStep may resume sidereal tracking after unpark even when the host application
+did not request tracking. The SDK treats that as motion without caller
+authority. `OnStepMount` records successful explicit `enable_tracking()` calls;
+`stop()`, `park()`, `unpark()`, and verified disable clear that authority. If a
+status poll sees tracking while no authority is active, the adapter calls the
+verified tracking-disable path and reports the resulting non-tracking state.
+
+`unpark()` also guarantees this postcondition directly: a successful unpark
+must leave the mount unparked and not tracking.
+
+## Location Readback Helpers
+
+OnStep/LX200 site readback uses arcminute precision. Compare configured and
+controller sites using:
+
+```python
+from onstep_adapter import haversine_distance_m, round_lx200_site_degrees
+
+configured_lat = 50.336
+configured_lon = 8.533
+readback_lat = round_lx200_site_degrees(configured_lat)
+readback_lon = round_lx200_site_degrees(configured_lon)
+distance_m = haversine_distance_m(configured_lat, configured_lon, readback_lat, readback_lon)
+```
+
+This prevents false mismatches immediately after a successful site sync.
 
 ## Shared Client
 

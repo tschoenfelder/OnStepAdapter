@@ -2,6 +2,7 @@
 
 from onstep_adapter.client import OnStepClient
 from onstep_adapter.focuser import OnStepFocuser
+from onstep_adapter.location import haversine_distance_m, round_lx200_site_degrees
 from onstep_adapter.mount import OnStepMount
 from onstep_adapter.results import (
     AxisMotionResult,
@@ -19,7 +20,7 @@ from onstep_adapter.safety import (
     SafetyViolation,
 )
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 __all__ = [
     "AxisMotionResult",
@@ -32,6 +33,8 @@ __all__ = [
     "OnStepMotionCalibration",
     "OnStepSafetyConfig",
     "OnStepSafetyError",
+    "haversine_distance_m",
+    "round_lx200_site_degrees",
     "SafetySeverity",
     "SafetyViolation",
     "SetParkPositionResult",

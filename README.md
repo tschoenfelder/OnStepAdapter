@@ -8,19 +8,19 @@ The distribution is named `onstep-adapter`; applications import it as
 
 ## Install
 
-Download `onstep_adapter-0.3.1-py3-none-any.whl` from the
-[v0.3.1 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.1),
+Download `onstep_adapter-0.3.2-py3-none-any.whl` from the
+[v0.3.2 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.2),
 then install it:
 
 ```bash
-python -m pip install ./onstep_adapter-0.3.1-py3-none-any.whl
+python -m pip install ./onstep_adapter-0.3.2-py3-none-any.whl
 ```
 
 Or install directly from the release URL:
 
 ```bash
 python -m pip install \
-  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.1/onstep_adapter-0.3.1-py3-none-any.whl
+  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.2/onstep_adapter-0.3.2-py3-none-any.whl
 ```
 
 Verify the import:
@@ -30,6 +30,20 @@ python -c "import onstep_adapter; print(onstep_adapter.__version__)"
 ```
 
 Runtime requirement: `pyserial>=3.5`.
+
+## Tracking Authority
+
+Some OnStep firmware starts sidereal tracking immediately after `:hR#`
+unpark. `OnStepMount.unpark()` therefore has a non-tracking postcondition: if
+live status reports tracking that was not explicitly requested through this
+adapter, the adapter sends a verified tracking disable before reporting the
+state. `enable_tracking()` records caller intent; `stop()`, `park()`,
+`unpark()`, and verified disable clear that intent again.
+
+Applications comparing configured observer coordinates with OnStep readback
+should use `haversine_distance_m()` and `round_lx200_site_degrees()`. OnStep's
+LX200 site registers store latitude/longitude at arcminute precision, so a
+freshly synchronized full-precision site will not read back byte-for-byte.
 
 ## Shared Mount And Focuser Connection
 

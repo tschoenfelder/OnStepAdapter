@@ -63,6 +63,7 @@ class FakeOnStepSerial:
         axis2_min_deg: int = -90,
         axis2_max_deg: int = 90,
         auto_meridian_flip: bool = False,
+        unpark_auto_tracks: bool = False,
         flip_on_positive_ha_goto: bool = False,
         dual_pier_west_ha_stop: bool = False,
         firmware_version: str = "10.19d",
@@ -99,6 +100,7 @@ class FakeOnStepSerial:
         self._axis2_min_deg = axis2_min_deg
         self._axis2_max_deg = axis2_max_deg
         self._auto_meridian_flip = bool(auto_meridian_flip)
+        self._unpark_auto_tracks = bool(unpark_auto_tracks)
         self._flip_on_positive_ha_goto = bool(flip_on_positive_ha_goto)
         self._dual_pier_west_ha_stop = bool(dual_pier_west_ha_stop)
         self._firmware_version = firmware_version
@@ -319,7 +321,7 @@ class FakeOnStepSerial:
 
         if cmd == ":hR#":
             if self._state == "parked":
-                self._state = "unparked"
+                self._state = "tracking" if self._unpark_auto_tracks else "unparked"
             return b"1"
 
         if cmd == ":hP#":

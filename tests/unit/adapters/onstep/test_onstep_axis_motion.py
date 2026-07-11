@@ -48,6 +48,7 @@ def _mount(*, calibration: OnStepMotionCalibration | None = None) -> tuple[OnSte
         motion_calibration=calibration,
     )
     mount._serial = fake
+    mount._tracking_explicitly_requested = True
     return mount, fake
 
 

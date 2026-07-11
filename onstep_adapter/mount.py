@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 
 from .ports.mount import MountPort, MountPosition, MountState
 from .firmware_proof import load_firmware_proof, validate_firmware_proof
+from .location import haversine_distance_m
 from .results import (
     AxisMotionResult,
     OnStepMotionCalibration,
@@ -175,13 +176,7 @@ def _parse_degrees(s: str) -> float:
 
 
 def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius_m = 6_371_000.0
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * radius_m * math.asin(math.sqrt(a))
+    return haversine_distance_m(lat1, lon1, lat2, lon2)
 
 
 def _parse_onstep_local_datetime(date_reply: str, time_reply: str) -> datetime:
@@ -721,6 +716,8 @@ class OnStepMount(MountPort):
         self._meridian_initial_pier_side: str | None = None
         self._meridian_postflip_pier_side: str | None = None
         self._meridian_flip_completed = False
+        self._tracking_explicitly_requested = False
+        self._suppress_unrequested_tracking_guard = False
         self._mechanical_axis_position: dict[str, float] | None = None
         self._mechanical_calibration = self._load_mechanical_calibration()
         state_path = self._safety_config.state_file
@@ -3338,12 +3335,7 @@ class OnStepMount(MountPort):
                 recovery_hint="Target is above the stricter OnStep/SmartTScope overhead limit.",
             ))
 
-    def get_state(self) -> MountState:
-        r = self._send(":GU#")
-        if not r:
-            return MountState.UNKNOWN
-        self._inspect_status(r)
-        decoded = self._last_decoded_status
+    def _mount_state_from_decoded(self, decoded: dict[str, object]) -> MountState:
         if decoded.get("parked"):
             return MountState.PARKED
         if decoded.get("slewing"):
@@ -3353,6 +3345,30 @@ class OnStepMount(MountPort):
         if decoded.get("tracking"):
             return MountState.TRACKING
         return MountState.UNPARKED
+
+    def _disable_unrequested_tracking(self) -> dict[str, object]:
+        _log.warning(
+            "OnStep reports tracking, but the adapter has no active tracking request; disabling tracking."
+        )
+        self._suppress_unrequested_tracking_guard = True
+        try:
+            return self.disable_tracking_verified(timeout_s=8.0, poll_s=0.25, attempts=2)
+        finally:
+            self._suppress_unrequested_tracking_guard = False
+
+    def get_state(self) -> MountState:
+        r = self._send(":GU#")
+        if not r:
+            return MountState.UNKNOWN
+        self._inspect_status(r)
+        decoded = self._last_decoded_status
+        if decoded.get("tracking"):
+            if not self._tracking_explicitly_requested and not self._suppress_unrequested_tracking_guard:
+                disabled = self._disable_unrequested_tracking()
+                if disabled.get("ok"):
+                    return self._mount_state_from_decoded(self._last_decoded_status)
+            return MountState.TRACKING
+        return self._mount_state_from_decoded(decoded)
 
     def _wait_for_status_flag(
         self,
@@ -3385,6 +3401,7 @@ class OnStepMount(MountPort):
 
     def unpark(self) -> bool:
         self._raise_if_locked("unpark", allow_clock_lock=True)
+        self._tracking_explicitly_requested = False
         try:
             reply = self._bus.send_fixed(":hR#", size=1, timeout=5.0)
         except TimeoutError as exc:
@@ -3393,7 +3410,8 @@ class OnStepMount(MountPort):
         if reply == "0":
             _log.warning("OnStepMount.unpark(): OnStep rejected :hR# with reply '0'")
             return False
-        return True
+        time.sleep(0.2)
+        return self.get_state() not in {MountState.PARKED, MountState.TRACKING}
 
     def recovery_unpark_stop_tracking(self) -> dict[str, object]:
         self._raise_if_locked("recovery_unpark_stop_tracking", allow_clock_lock=True)
@@ -3402,6 +3420,7 @@ class OnStepMount(MountPort):
         except TimeoutError as exc:
             raise RuntimeError("OnStep serial bus busy during recovery unpark") from exc
         accepted = reply != "0"
+        self._tracking_explicitly_requested = False
         self._persist_last_state(last_command="recovery_unpark", force=True)
         time.sleep(0.2)
         state_after_unpark = self.get_state()
@@ -3526,6 +3545,7 @@ class OnStepMount(MountPort):
             raise RuntimeError("OnStep serial bus busy during enable_tracking") from exc
         ok = r == "1"
         if ok:
+            self._tracking_explicitly_requested = True
             if not self._meridian_flip_completed:
                 self.begin_meridian_tracking_session()
             self._persist_last_state(last_command="enable_tracking", force=True)
@@ -3548,6 +3568,7 @@ class OnStepMount(MountPort):
             raise RuntimeError("OnStep serial bus busy during enable_tracking_for_autonomous_watch") from exc
         ok = r == "1"
         if ok:
+            self._tracking_explicitly_requested = True
             self._persist_last_state(last_command="enable_tracking_for_autonomous_watch", force=True)
         else:
             _log.warning(
@@ -3690,6 +3711,7 @@ class OnStepMount(MountPort):
         return "|" in self._send(":D#")
 
     def stop(self) -> None:
+        self._tracking_explicitly_requested = False
         self._bus.write_bypass(b":Q#")
         self._persist_last_state(last_command="stop", force=True)
 
@@ -3706,6 +3728,7 @@ class OnStepMount(MountPort):
             _log.warning("OnStepMount.park(): OnStep did not accept :hP#; reply=%r", reply)
         if ok:
             self._at_mechanical_home = False
+            self._tracking_explicitly_requested = False
         self._persist_last_state(last_command="park", force=True)
         return ok
 
@@ -3861,6 +3884,7 @@ class OnStepMount(MountPort):
                     "tracking": bool(decoded.get("tracking")),
                 })
                 if not decoded.get("tracking"):
+                    self._tracking_explicitly_requested = False
                     result["ok"] = True
                     result["status_overrode_ack"] = reply != "1"
                     self._persist_last_state(last_command="disable_tracking_verified", force=True)
