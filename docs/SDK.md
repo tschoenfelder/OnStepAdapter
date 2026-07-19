@@ -7,7 +7,7 @@ adapter instance.
 ## Install
 
 ```bash
-python -m pip install onstep_adapter-0.3.2-py3-none-any.whl
+python -m pip install onstep_adapter-0.3.3-py3-none-any.whl
 ```
 
 The wheel owns only the `onstep_adapter` namespace. It intentionally does not
@@ -119,8 +119,14 @@ fields. It does not claim independent controller verification.
 ## Bounded Axis Corrections
 
 - `move_ra_timed()` and `move_dec_timed()` support safe manual nudges.
+- `mode="manual"` on timed RA/DEC motion is for deliberate non-astronomical
+  terrestrial jogs with tracking off. It may run at confirmed mechanical HOME,
+  skips RA/DEC target projection, and still honors mechanical safety blockers,
+  OnStep fault/limit status, duration bounds, and the motion lock.
 - `move_ra()` and `move_dec()` accept signed on-image arcseconds and require
   `OnStepMotionCalibration`.
+- `mode="manual"` is rejected by angular `move_ra()` and `move_dec()` because
+  those APIs describe sky offsets that require astronomical context.
 - Guide mode uses `:RG#` and native `:Mg...#` pulse guiding.
 - Center mode uses `:RC#`, directional movement, and a guaranteed matching
   direction stop.

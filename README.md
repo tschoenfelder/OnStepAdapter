@@ -8,19 +8,19 @@ The distribution is named `onstep-adapter`; applications import it as
 
 ## Install
 
-Download `onstep_adapter-0.3.2-py3-none-any.whl` from the
-[v0.3.2 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.2),
+Download `onstep_adapter-0.3.3-py3-none-any.whl` from the
+[v0.3.3 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.3),
 then install it:
 
 ```bash
-python -m pip install ./onstep_adapter-0.3.2-py3-none-any.whl
+python -m pip install ./onstep_adapter-0.3.3-py3-none-any.whl
 ```
 
 Or install directly from the release URL:
 
 ```bash
 python -m pip install \
-  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.2/onstep_adapter-0.3.2-py3-none-any.whl
+  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.3/onstep_adapter-0.3.3-py3-none-any.whl
 ```
 
 Verify the import:
@@ -116,6 +116,19 @@ Manual applications can issue bounded timed nudges:
 client.mount.move_ra_timed("east", 250, mode="center")
 client.mount.move_dec_timed("north", 100, mode="guide")
 ```
+
+For deliberate non-astronomical terrestrial jogs with tracking off, use manual
+mode:
+
+```python
+client.mount.move_ra_timed("east", 250, mode="manual")
+client.mount.move_dec_timed("north", 250, mode="manual")
+```
+
+Manual mode is available only for timed RA/DEC motion. It may be used at
+confirmed mechanical HOME, skips RA/DEC target projection, and still honors
+fresh mechanical safety blockers, OnStep fault/limit status, duration bounds,
+and the motion lock.
 
 Plate-solving applications can request estimated on-image corrections:
 

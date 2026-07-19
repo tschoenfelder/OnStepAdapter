@@ -20,7 +20,7 @@ from onstep_adapter.safety import (
     SafetyViolation,
 )
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 __all__ = [
     "AxisMotionResult",

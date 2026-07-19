@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 def test_public_release_surface() -> None:
-    assert __version__ == "0.3.2"
+    assert __version__ == "0.3.3"
     assert OnStepClient is not None
     assert OnStepMount is not None
     assert OnStepFocuser is not None

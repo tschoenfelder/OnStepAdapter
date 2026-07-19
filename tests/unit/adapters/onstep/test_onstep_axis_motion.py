@@ -155,6 +155,65 @@ def test_motion_refused_at_home_without_sending_motion() -> None:
     assert b":Mn#" not in fake.commands_received
 
 
+def test_manual_timed_jog_is_allowed_at_home_without_target_validation() -> None:
+    mount, fake = _mount(calibration=_calibration())
+    preflight = _safe_preflight()
+    preflight["at_home"] = True
+    preflight["tracking"] = False
+    with (
+        patch.object(mount, "motion_safety_preflight", return_value=preflight),
+        patch.object(mount, "validate_target", side_effect=AssertionError("manual jog must not validate RA/DEC")),
+    ):
+        result = mount.move_ra_timed("east", 20, mode="manual")
+
+    commands = [command.decode() for command in fake.commands_received]
+    assert result.ok is True
+    assert result.mode == "manual"
+    assert result.tracking_before is False
+    assert commands.index(":RC#") < commands.index(":Me#") < commands.index(":Qe#")
+    assert commands.index(":Qe#") < commands.index(":RG#")
+
+
+def test_manual_timed_jog_still_honors_motion_refused() -> None:
+    mount, fake = _mount(calibration=_calibration())
+    preflight = _safe_preflight()
+    preflight["at_home"] = True
+    preflight["tracking"] = False
+    preflight["motion_refused"] = True
+    preflight["motion_refusal_reason"] = "onstep_at_limit"
+
+    with patch.object(mount, "motion_safety_preflight", return_value=preflight):
+        with pytest.raises(OnStepSafetyError, match="onstep_at_limit"):
+            mount.move_dec_timed("north", 20, mode="manual")
+
+    assert b":Mn#" not in fake.commands_received
+
+
+def test_manual_timed_jog_requires_tracking_off() -> None:
+    mount, fake = _mount(calibration=_calibration())
+    preflight = _safe_preflight()
+    preflight["at_home"] = True
+    preflight["tracking"] = True
+
+    with patch.object(mount, "motion_safety_preflight", return_value=preflight):
+        with pytest.raises(OnStepSafetyError, match="manual_jog_requires_tracking_off"):
+            mount.move_dec_timed("north", 20, mode="manual")
+
+    assert b":Mn#" not in fake.commands_received
+
+
+def test_manual_mode_is_rejected_for_angular_motion() -> None:
+    mount, fake = _mount(calibration=_calibration())
+
+    with pytest.raises(ValueError, match="manual mode is only supported by timed RA motion"):
+        mount.move_ra(1.0, mode="manual")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="manual mode is only supported by timed DEC motion"):
+        mount.move_dec(1.0, mode="manual")  # type: ignore[arg-type]
+
+    assert b":Me#" not in fake.commands_received
+    assert b":Mn#" not in fake.commands_received
+
+
 def test_live_hard_limit_stops_tracking_and_raises_limit_error() -> None:
     mount, fake = _mount(calibration=_calibration())
     hard = _safe_preflight()

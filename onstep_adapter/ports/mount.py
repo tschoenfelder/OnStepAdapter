@@ -141,7 +141,7 @@ class MountPort(ABC):
         direction: Literal["east", "west", "e", "w"],
         duration_ms: int,
         *,
-        mode: Literal["guide", "center"] = "center",
+        mode: Literal["guide", "center", "manual"] = "center",
     ) -> object:
         raise NotImplementedError("bounded RA motion is not supported")
 
@@ -150,7 +150,7 @@ class MountPort(ABC):
         direction: Literal["north", "south", "n", "s"],
         duration_ms: int,
         *,
-        mode: Literal["guide", "center"] = "center",
+        mode: Literal["guide", "center", "manual"] = "center",
     ) -> object:
         raise NotImplementedError("bounded DEC motion is not supported")
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.3 - 2026-07-19
+
+- Add `mode="manual"` for timed RA/DEC jogs used by deliberate
+  non-astronomical terrestrial controls.
+- Manual timed jogs may run at confirmed mechanical HOME with tracking off and
+  skip RA/DEC endpoint validation while retaining mechanical safety blockers.
+- Reject `mode="manual"` on angular sky-offset APIs.
+- Document manual jog semantics for consuming applications.
+
 ## 0.3.2 - 2026-07-11
 
 - Actively disable unrequested OnStep tracking observed after unpark or status

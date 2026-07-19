@@ -3972,11 +3972,11 @@ class OnStepMount(MountPort):
         axis: Literal["ra", "dec"],
         direction: str,
         duration_ms: int,
-        mode: Literal["guide", "center"],
+        mode: Literal["guide", "center", "manual"],
         requested_arcsec: float | None,
         cancel_check: Callable[[], bool] | None,
     ) -> AxisMotionResult:
-        if mode not in {"guide", "center"}:
+        if mode not in {"guide", "center", "manual"}:
             raise ValueError(f"invalid axis-motion mode: {mode!r}")
         d = self._normalized_axis_direction(axis=axis, direction=direction)
         duration = int(duration_ms)
@@ -4010,7 +4010,7 @@ class OnStepMount(MountPort):
                     severity=SafetySeverity.BLOCKED,
                     recovery_hint="Resolve the fresh OnStep motion-preflight blockers before correction.",
                 ))
-            if preflight.get("at_home"):
+            if preflight.get("at_home") and mode != "manual":
                 raise OnStepSafetyError(SafetyViolation(
                     reason="axis_motion_refused_at_home",
                     command=f"move_{axis}_{mode}",
@@ -4024,6 +4024,13 @@ class OnStepMount(MountPort):
                     command=f"move_{axis}_guide",
                     severity=SafetySeverity.BLOCKED,
                 ))
+            if mode == "manual" and tracking_before:
+                raise OnStepSafetyError(SafetyViolation(
+                    reason="manual_jog_requires_tracking_off",
+                    command=f"move_{axis}_manual",
+                    severity=SafetySeverity.BLOCKED,
+                    recovery_hint="Disable tracking before a deliberate non-astronomical manual jog.",
+                ))
             logical = preflight.get("logical_position")
             if not isinstance(logical, dict):
                 raise OnStepSafetyError(SafetyViolation(
@@ -4033,12 +4040,12 @@ class OnStepMount(MountPort):
                 ))
             before = MountPosition(ra=float(logical["ra"]), dec=float(logical["dec"]))
 
-            rate = self._motion_rate(mode=mode, axis=axis, direction=d)
+            rate = None if mode == "manual" else self._motion_rate(mode=mode, axis=axis, direction=d)
             projected_arcsec = requested_arcsec
             if projected_arcsec is None and rate is not None:
                 sign = 1.0 if d in {"e", "n"} else -1.0
                 projected_arcsec = sign * rate * duration / 1000.0
-            if projected_arcsec is not None:
+            if projected_arcsec is not None and mode != "manual":
                 target = self._project_axis_motion(
                     position=before,
                     axis=axis,
@@ -4158,7 +4165,7 @@ class OnStepMount(MountPort):
         direction: Literal["east", "west", "e", "w"],
         duration_ms: int,
         *,
-        mode: Literal["guide", "center"] = "center",
+        mode: Literal["guide", "center", "manual"] = "center",
         cancel_check: Callable[[], bool] | None = None,
     ) -> AxisMotionResult:
         return self._axis_motion(
@@ -4175,7 +4182,7 @@ class OnStepMount(MountPort):
         direction: Literal["north", "south", "n", "s"],
         duration_ms: int,
         *,
-        mode: Literal["guide", "center"] = "center",
+        mode: Literal["guide", "center", "manual"] = "center",
         cancel_check: Callable[[], bool] | None = None,
     ) -> AxisMotionResult:
         return self._axis_motion(
@@ -4194,6 +4201,8 @@ class OnStepMount(MountPort):
         mode: Literal["guide", "center"] = "center",
         cancel_check: Callable[[], bool] | None = None,
     ) -> AxisMotionResult:
+        if mode == "manual":
+            raise ValueError("manual mode is only supported by timed RA motion")
         if not math.isfinite(offset_arcsec) or offset_arcsec == 0.0:
             raise ValueError("RA offset_arcsec must be finite and non-zero")
         direction = "e" if offset_arcsec > 0 else "w"
@@ -4217,6 +4226,8 @@ class OnStepMount(MountPort):
         mode: Literal["guide", "center"] = "center",
         cancel_check: Callable[[], bool] | None = None,
     ) -> AxisMotionResult:
+        if mode == "manual":
+            raise ValueError("manual mode is only supported by timed DEC motion")
         if not math.isfinite(offset_arcsec) or offset_arcsec == 0.0:
             raise ValueError("DEC offset_arcsec must be finite and non-zero")
         direction = "n" if offset_arcsec > 0 else "s"
