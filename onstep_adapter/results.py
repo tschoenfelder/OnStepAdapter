@@ -96,7 +96,7 @@ class AxisMotionResult:
     ok: bool
     axis: Literal["ra", "dec"]
     direction: Literal["e", "w", "n", "s"]
-    mode: Literal["guide", "center"]
+    mode: Literal["guide", "center", "manual"]
     requested_arcsec: float | None
     estimated_duration_ms: int
     commands_sent: tuple[str, ...]
