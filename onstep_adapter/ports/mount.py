@@ -142,6 +142,7 @@ class MountPort(ABC):
         duration_ms: int,
         *,
         mode: Literal["guide", "center", "manual"] = "center",
+        rate_preset: int | None = None,
     ) -> object:
         raise NotImplementedError("bounded RA motion is not supported")
 
@@ -151,6 +152,7 @@ class MountPort(ABC):
         duration_ms: int,
         *,
         mode: Literal["guide", "center", "manual"] = "center",
+        rate_preset: int | None = None,
     ) -> object:
         raise NotImplementedError("bounded DEC motion is not supported")
 

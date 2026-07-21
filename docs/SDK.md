@@ -7,7 +7,7 @@ adapter instance.
 ## Install
 
 ```bash
-python -m pip install onstep_adapter-0.3.3-py3-none-any.whl
+python -m pip install onstep_adapter-0.3.4-py3-none-any.whl
 ```
 
 The wheel owns only the `onstep_adapter` namespace. It intentionally does not
@@ -123,6 +123,9 @@ fields. It does not claim independent controller verification.
   terrestrial jogs with tracking off. It may run at confirmed mechanical HOME,
   skips RA/DEC target projection, and still honors mechanical safety blockers,
   OnStep fault/limit status, duration bounds, and the motion lock.
+- Timed RA/DEC motion accepts `rate_preset=0..9` to send `:R0#` through
+  `:R9#` instead of the mode default rate. The selected preset is scoped to
+  that one bounded move, and guide rate is restored afterward.
 - `move_ra()` and `move_dec()` accept signed on-image arcseconds and require
   `OnStepMotionCalibration`.
 - `mode="manual"` is rejected by angular `move_ra()` and `move_dec()` because
