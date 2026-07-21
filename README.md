@@ -8,19 +8,19 @@ The distribution is named `onstep-adapter`; applications import it as
 
 ## Install
 
-Download `onstep_adapter-0.3.3-py3-none-any.whl` from the
-[v0.3.3 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.3),
+Download `onstep_adapter-0.3.4-py3-none-any.whl` from the
+[v0.3.4 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.4),
 then install it:
 
 ```bash
-python -m pip install ./onstep_adapter-0.3.3-py3-none-any.whl
+python -m pip install ./onstep_adapter-0.3.4-py3-none-any.whl
 ```
 
 Or install directly from the release URL:
 
 ```bash
 python -m pip install \
-  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.3/onstep_adapter-0.3.3-py3-none-any.whl
+  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.4/onstep_adapter-0.3.4-py3-none-any.whl
 ```
 
 Verify the import:
@@ -129,6 +129,16 @@ Manual mode is available only for timed RA/DEC motion. It may be used at
 confirmed mechanical HOME, skips RA/DEC target projection, and still honors
 fresh mechanical safety blockers, OnStep fault/limit status, duration bounds,
 and the motion lock.
+
+Timed moves can select an OnStep/LX200 rate preset per call:
+
+```python
+client.mount.move_ra_timed("east", 500, mode="manual", rate_preset=4)
+```
+
+`rate_preset` accepts integers `0..9` and sends `:R0#` through `:R9#` instead
+of the mode default (`:RG#` for guide, `:RC#` for center/manual). The adapter
+still sends the bounded directional stop and restores guide rate afterward.
 
 Plate-solving applications can request estimated on-image corrections:
 

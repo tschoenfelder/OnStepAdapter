@@ -99,6 +99,7 @@ class AxisMotionResult:
     mode: Literal["guide", "center", "manual"]
     requested_arcsec: float | None
     estimated_duration_ms: int
+    rate_preset: int | None
     commands_sent: tuple[str, ...]
     before_ra: float
     before_dec: float

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.4 - 2026-07-21
+
+- Add per-call `rate_preset=0..9` for timed RA/DEC moves.
+- Send `:R0#` through `:R9#` when a preset is supplied, while retaining
+  bounded directional stops and guide-rate restoration.
+- Record the selected rate preset in `AxisMotionResult`.
+- Document rate-selectable manual jog usage.
+
 ## 0.3.3 - 2026-07-19
 
 - Add `mode="manual"` for timed RA/DEC jogs used by deliberate

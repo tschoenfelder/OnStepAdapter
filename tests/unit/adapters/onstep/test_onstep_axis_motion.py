@@ -174,6 +174,47 @@ def test_manual_timed_jog_is_allowed_at_home_without_target_validation() -> None
     assert commands.index(":Qe#") < commands.index(":RG#")
 
 
+def test_manual_timed_jog_uses_requested_rate_preset() -> None:
+    mount, fake = _mount(calibration=_calibration())
+    preflight = _safe_preflight()
+    preflight["at_home"] = True
+    preflight["tracking"] = False
+    with patch.object(mount, "motion_safety_preflight", return_value=preflight):
+        result = mount.move_dec_timed("south", 20, mode="manual", rate_preset=4)
+
+    commands = [command.decode() for command in fake.commands_received]
+    assert result.ok is True
+    assert result.rate_preset == 4
+    assert commands.index(":R4#") < commands.index(":Ms#") < commands.index(":Qs#")
+    assert commands.index(":Qs#") < commands.index(":RG#")
+    assert ":RC#" not in commands
+
+
+@pytest.mark.parametrize("bad_preset", [-1, 10, 1.5, True])
+def test_timed_axis_motion_rejects_invalid_rate_preset(bad_preset: object) -> None:
+    mount, fake = _mount(calibration=_calibration())
+
+    with pytest.raises(ValueError, match="rate_preset must be an integer 0..9"):
+        mount.move_ra_timed("east", 20, mode="manual", rate_preset=bad_preset)  # type: ignore[arg-type]
+
+    assert b":Me#" not in fake.commands_received
+    assert all(not command.startswith(b":R") for command in fake.commands_received)
+
+
+def test_center_timed_motion_can_use_requested_rate_preset() -> None:
+    mount, fake = _mount(calibration=_calibration())
+    with (
+        patch.object(mount, "motion_safety_preflight", return_value=_safe_preflight()),
+        patch.object(mount, "validate_target", return_value={"allowed": True, "violation": None}),
+    ):
+        result = mount.move_ra_timed("west", 20, mode="center", rate_preset=6)
+
+    commands = [command.decode() for command in fake.commands_received]
+    assert result.rate_preset == 6
+    assert commands.index(":R6#") < commands.index(":Mw#") < commands.index(":Qw#")
+    assert ":RC#" not in commands
+
+
 def test_manual_timed_jog_still_honors_motion_refused() -> None:
     mount, fake = _mount(calibration=_calibration())
     preflight = _safe_preflight()

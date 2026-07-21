@@ -3973,11 +3973,19 @@ class OnStepMount(MountPort):
         direction: str,
         duration_ms: int,
         mode: Literal["guide", "center", "manual"],
+        rate_preset: int | None,
         requested_arcsec: float | None,
         cancel_check: Callable[[], bool] | None,
     ) -> AxisMotionResult:
         if mode not in {"guide", "center", "manual"}:
             raise ValueError(f"invalid axis-motion mode: {mode!r}")
+        selected_rate_preset: int | None = None
+        if rate_preset is not None:
+            if isinstance(rate_preset, bool) or not isinstance(rate_preset, int):
+                raise ValueError("rate_preset must be an integer 0..9")
+            if rate_preset < 0 or rate_preset > 9:
+                raise ValueError("rate_preset must be an integer 0..9")
+            selected_rate_preset = rate_preset
         d = self._normalized_axis_direction(axis=axis, direction=direction)
         duration = int(duration_ms)
         maximum = 16399 if mode == "guide" else 120000
@@ -4066,7 +4074,9 @@ class OnStepMount(MountPort):
                         recovery_hint="Reduce or reverse the requested correction.",
                     ))
 
-            rate_command = ":RG#" if mode == "guide" else ":RC#"
+            rate_command = f":R{selected_rate_preset}#" if selected_rate_preset is not None else (
+                ":RG#" if mode == "guide" else ":RC#"
+            )
             self._bus.write_no_reply(rate_command, timeout=0.5)
             commands.append(rate_command)
             rate_selected = True
@@ -4145,6 +4155,7 @@ class OnStepMount(MountPort):
             mode=mode,
             requested_arcsec=requested_arcsec,
             estimated_duration_ms=duration,
+            rate_preset=selected_rate_preset,
             commands_sent=tuple(commands),
             before_ra=before.ra,
             before_dec=before.dec,
@@ -4166,6 +4177,7 @@ class OnStepMount(MountPort):
         duration_ms: int,
         *,
         mode: Literal["guide", "center", "manual"] = "center",
+        rate_preset: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> AxisMotionResult:
         return self._axis_motion(
@@ -4173,6 +4185,7 @@ class OnStepMount(MountPort):
             direction=direction,
             duration_ms=duration_ms,
             mode=mode,
+            rate_preset=rate_preset,
             requested_arcsec=None,
             cancel_check=cancel_check,
         )
@@ -4183,6 +4196,7 @@ class OnStepMount(MountPort):
         duration_ms: int,
         *,
         mode: Literal["guide", "center", "manual"] = "center",
+        rate_preset: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> AxisMotionResult:
         return self._axis_motion(
@@ -4190,6 +4204,7 @@ class OnStepMount(MountPort):
             direction=direction,
             duration_ms=duration_ms,
             mode=mode,
+            rate_preset=rate_preset,
             requested_arcsec=None,
             cancel_check=cancel_check,
         )
@@ -4215,6 +4230,7 @@ class OnStepMount(MountPort):
             direction=direction,
             duration_ms=duration,
             mode=mode,
+            rate_preset=None,
             requested_arcsec=float(offset_arcsec),
             cancel_check=cancel_check,
         )
@@ -4240,6 +4256,7 @@ class OnStepMount(MountPort):
             direction=direction,
             duration_ms=duration,
             mode=mode,
+            rate_preset=None,
             requested_arcsec=float(offset_arcsec),
             cancel_check=cancel_check,
         )
@@ -4255,6 +4272,7 @@ class OnStepMount(MountPort):
                 direction=d,
                 duration_ms=duration_ms,
                 mode="guide",
+                rate_preset=None,
                 requested_arcsec=None,
                 cancel_check=None,
             )
