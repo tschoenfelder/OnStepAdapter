@@ -133,6 +133,63 @@ def test_angular_offset_requires_calibration() -> None:
     assert b":Me#" not in fake.commands_received
 
 
+def test_runtime_motion_calibration_enables_angular_offsets() -> None:
+    mount, fake = _mount(calibration=None)
+
+    with pytest.raises(ValueError, match="motion calibration is required"):
+        mount.move_ra(1.0)
+
+    mount.set_motion_calibration(OnStepMotionCalibration(center_ra_east_arcsec_per_s=50.0))
+
+    with (
+        patch.object(mount, "motion_safety_preflight", return_value=_safe_preflight()),
+        patch.object(mount, "validate_target", return_value={"allowed": True, "violation": None}),
+    ):
+        result = mount.move_ra(1.0, mode="center")
+
+    commands = [command.decode() for command in fake.commands_received]
+    assert result.estimated_duration_ms == 20
+    assert commands.index(":RC#") < commands.index(":Me#") < commands.index(":Qe#")
+
+
+def test_runtime_motion_calibration_update_changes_duration() -> None:
+    mount, _ = _mount(calibration=OnStepMotionCalibration(center_dec_north_arcsec_per_s=25.0))
+
+    with (
+        patch.object(mount, "motion_safety_preflight", return_value=_safe_preflight()),
+        patch.object(mount, "validate_target", return_value={"allowed": True, "violation": None}),
+    ):
+        first = mount.move_dec(1.0, mode="center")
+
+    mount.set_motion_calibration(OnStepMotionCalibration(center_dec_north_arcsec_per_s=50.0))
+
+    with (
+        patch.object(mount, "motion_safety_preflight", return_value=_safe_preflight()),
+        patch.object(mount, "validate_target", return_value={"allowed": True, "violation": None}),
+    ):
+        second = mount.move_dec(1.0, mode="center")
+
+    assert first.estimated_duration_ms == 40
+    assert second.estimated_duration_ms == 20
+
+
+def test_partial_motion_calibration_requires_requested_direction() -> None:
+    mount, fake = _mount(calibration=OnStepMotionCalibration(center_ra_east_arcsec_per_s=50.0))
+
+    with pytest.raises(ValueError, match="motion calibration is required"):
+        mount.move_ra(-1.0, mode="center")
+
+    assert b":Mw#" not in fake.commands_received
+
+
+@pytest.mark.parametrize("bad_rate", [0.0, -1.0, float("inf"), float("nan")])
+def test_runtime_motion_calibration_rejects_invalid_rates(bad_rate: float) -> None:
+    mount, _ = _mount(calibration=None)
+
+    with pytest.raises(ValueError, match="invalid motion calibration rate"):
+        mount.set_motion_calibration(OnStepMotionCalibration(center_ra_east_arcsec_per_s=bad_rate))
+
+
 def test_guide_requires_tracking_without_sending_motion() -> None:
     mount, fake = _mount(calibration=_calibration())
     preflight = _safe_preflight()

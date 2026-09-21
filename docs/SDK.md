@@ -1,13 +1,24 @@
 # OnStep Adapter SDK
 
 `onstep-adapter` provides one serial owner with separate mount and focuser
-interfaces. Do not open the same OnStep serial port from a second process or
-adapter instance.
+interfaces.
+
+The supported OnStep ownership model is **exclusive serial ownership by
+OnStepAdapter**. A consuming application must not open the OnStep controller
+through raw serial, raw LX200 TCP/socket, INDI `LX200 OnStep`, or another
+adapter path. All OnStep-owned capabilities used by the application must route
+through `OnStepClient.mount` and `OnStepClient.focuser`: RA/DEC correction,
+stop/abort, PARK/unpark, tracking, status, and OnStep focuser control.
+
+INDI can continue to serve unrelated hardware such as cameras, filter wheels,
+or non-OnStep accessories. If `indiserver` previously owned the OnStep serial
+port through `indi_lx200_OnStep`, remove that OnStep device from the INDI
+server before starting an application that uses OnStepAdapter.
 
 ## Install
 
 ```bash
-python -m pip install onstep_adapter-0.3.4-py3-none-any.whl
+python -m pip install onstep_adapter-0.3.5-py3-none-any.whl
 ```
 
 The wheel owns only the `onstep_adapter` namespace. It intentionally does not
@@ -126,8 +137,13 @@ fields. It does not claim independent controller verification.
 - Timed RA/DEC motion accepts `rate_preset=0..9` to send `:R0#` through
   `:R9#` instead of the mode default rate. The selected preset is scoped to
   that one bounded move, and guide rate is restored afterward.
-- `move_ra()` and `move_dec()` accept signed on-image arcseconds and require
-  `OnStepMotionCalibration`.
+- `move_ra()` and `move_dec()` accept signed on-image arcseconds and require a
+  direction-specific `OnStepMotionCalibration` rate for the requested
+  mode/axis/direction.
+- `set_motion_calibration()` and `get_motion_calibration()` allow applications
+  to install measured rates after the client has already been constructed.
+- Partial calibration records are allowed, so bootstrap workflows can install
+  only the rates they have measured.
 - `mode="manual"` is rejected by angular `move_ra()` and `move_dec()` because
   those APIs describe sky offsets that require astronomical context.
 - Guide mode uses `:RG#` and native `:Mg...#` pulse guiding.
@@ -136,6 +152,24 @@ fields. It does not claim independent controller verification.
 - Tracking remains active and guide rate is restored after centering.
 - Calls are serialized and bounded; no indefinite public start/stop API exists.
 - Angular movement is estimated and must be verified from a new camera frame.
+
+Bootstrap flow for a camera-measured mount:
+
+```python
+# 1. Use timed motion while uncalibrated.
+client.mount.move_ra_timed("east", 500, mode="center", rate_preset=4)
+
+# 2. Measure the achieved sky/image displacement in the consuming application.
+measured_rate = measured_arcsec / 0.5
+
+# 3. Install just the measured direction, or a full calibration if available.
+client.mount.set_motion_calibration(
+    OnStepMotionCalibration(center_ra_east_arcsec_per_s=measured_rate)
+)
+
+# 4. Arcsecond moves are now available for that calibrated direction.
+client.mount.move_ra(+3.0, mode="center")
+```
 
 ## Supervised Motion Validation
 

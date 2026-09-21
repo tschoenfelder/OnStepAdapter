@@ -40,7 +40,17 @@ def test_client_passes_motion_calibration_to_mount() -> None:
         motion_calibration=calibration,
     )
 
-    assert client.mount._motion_calibration is calibration
+    assert client.mount.get_motion_calibration() is calibration
+
+
+def test_client_mount_can_update_motion_calibration_after_construction() -> None:
+    client = OnStepClient("/dev/test", serial_bus=_bus())
+    calibration = OnStepMotionCalibration(center_ra_east_arcsec_per_s=42.0)
+
+    assert client.mount.get_motion_calibration() is None
+    client.mount.set_motion_calibration(calibration)
+
+    assert client.mount.get_motion_calibration() is calibration
 
 
 def test_connect_returns_structured_result() -> None:
