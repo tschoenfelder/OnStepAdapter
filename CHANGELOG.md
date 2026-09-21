@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.5 - 2026-09-21
+
+- Document exclusive OnStepAdapter serial ownership as the supported transport
+  model for all OnStep mount, tracking, PARK/unpark, status, stop, and focuser
+  access.
+- Add thread-safe runtime `set_motion_calibration()` /
+  `get_motion_calibration()` on `OnStepMount`.
+- Allow partial `OnStepMotionCalibration` records so applications can bootstrap
+  with timed moves, measure actual displacement, and then install calibrated
+  angular rates.
+- Add tests proving angular moves are rejected before calibration, accepted
+  after runtime calibration, updated rates affect duration, and invalid rates
+  are refused.
+
 ## 0.3.4 - 2026-07-21
 
 - Add per-call `rate_preset=0..9` for timed RA/DEC moves.

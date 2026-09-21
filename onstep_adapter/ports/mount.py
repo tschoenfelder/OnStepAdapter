@@ -136,6 +136,14 @@ class MountPort(ABC):
     ) -> object:
         raise NotImplementedError("setting PARK from current position is not supported")
 
+    def get_motion_calibration(self) -> object | None:
+        """Return application-supplied angular motion calibration, if installed."""
+        return None
+
+    def set_motion_calibration(self, calibration: object | None) -> None:
+        """Install or clear application-supplied angular motion calibration."""
+        raise NotImplementedError("runtime motion calibration is not supported")
+
     def move_ra_timed(
         self,
         direction: Literal["east", "west", "e", "w"],

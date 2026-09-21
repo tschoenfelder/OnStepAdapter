@@ -61,14 +61,14 @@ class SetParkPositionResult:
 
 @dataclass(frozen=True)
 class OnStepMotionCalibration:
-    guide_ra_east_arcsec_per_s: float
-    guide_ra_west_arcsec_per_s: float
-    guide_dec_north_arcsec_per_s: float
-    guide_dec_south_arcsec_per_s: float
-    center_ra_east_arcsec_per_s: float
-    center_ra_west_arcsec_per_s: float
-    center_dec_north_arcsec_per_s: float
-    center_dec_south_arcsec_per_s: float
+    guide_ra_east_arcsec_per_s: float | None = None
+    guide_ra_west_arcsec_per_s: float | None = None
+    guide_dec_north_arcsec_per_s: float | None = None
+    guide_dec_south_arcsec_per_s: float | None = None
+    center_ra_east_arcsec_per_s: float | None = None
+    center_ra_west_arcsec_per_s: float | None = None
+    center_dec_north_arcsec_per_s: float | None = None
+    center_dec_south_arcsec_per_s: float | None = None
 
     def rate_for(
         self,
@@ -76,7 +76,7 @@ class OnStepMotionCalibration:
         mode: Literal["guide", "center"],
         axis: Literal["ra", "dec"],
         direction: Literal["e", "w", "n", "s"],
-    ) -> float:
+    ) -> float | None:
         key = f"{mode}_{axis}_{direction}"
         mapping = {
             "guide_ra_e": self.guide_ra_east_arcsec_per_s,
@@ -88,7 +88,8 @@ class OnStepMotionCalibration:
             "center_dec_n": self.center_dec_north_arcsec_per_s,
             "center_dec_s": self.center_dec_south_arcsec_per_s,
         }
-        return float(mapping[key])
+        value = mapping[key]
+        return None if value is None else float(value)
 
 
 @dataclass(frozen=True)

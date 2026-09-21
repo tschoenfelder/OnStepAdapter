@@ -696,7 +696,9 @@ class OnStepMount(MountPort):
         self._timeout = timeout
         self._bus = serial_bus or OnStepSerialBus()
         self._safety_config = safety_config or _default_safety_config()
-        self._motion_calibration = motion_calibration
+        self._motion_calibration_lock = threading.RLock()
+        self._motion_calibration: OnStepMotionCalibration | None = None
+        self.set_motion_calibration(motion_calibration)
         self._axis_motion_lock = threading.Lock()
         self._horizon: _HorizonProfile | None = None
         self._onstep_limits = OnStepLimits()
@@ -3921,6 +3923,34 @@ class OnStepMount(MountPort):
             raise ValueError(f"invalid {axis.upper()} direction: {direction!r}")
         return value  # type: ignore[return-value]
 
+    @staticmethod
+    def _validate_motion_calibration(calibration: OnStepMotionCalibration | None) -> None:
+        if calibration is None:
+            return
+        for field_name, value in calibration.__dict__.items():
+            if value is None:
+                continue
+            rate = float(value)
+            if not math.isfinite(rate) or rate <= 0.0:
+                raise ValueError(f"invalid motion calibration rate {field_name}={value!r}")
+
+    def get_motion_calibration(self) -> OnStepMotionCalibration | None:
+        """Return the current application-supplied angular motion calibration."""
+        with self._motion_calibration_lock:
+            return self._motion_calibration
+
+    def set_motion_calibration(self, calibration: OnStepMotionCalibration | None) -> None:
+        """Install or clear direction-specific angular correction rates.
+
+        Partial calibrations are allowed. Angular move_ra()/move_dec() calls
+        still require the exact mode/axis/direction rate they need. Timed moves
+        do not require calibration and are the intended bootstrap path for
+        applications that measure rates from camera displacement.
+        """
+        self._validate_motion_calibration(calibration)
+        with self._motion_calibration_lock:
+            self._motion_calibration = calibration
+
     def _motion_rate(
         self,
         *,
@@ -3928,13 +3958,17 @@ class OnStepMount(MountPort):
         axis: Literal["ra", "dec"],
         direction: Literal["e", "w", "n", "s"],
     ) -> float | None:
-        if self._motion_calibration is None:
+        with self._motion_calibration_lock:
+            calibration = self._motion_calibration
+            if calibration is None:
+                return None
+            rate = calibration.rate_for(
+                mode=mode,
+                axis=axis,
+                direction=direction,
+            )
+        if rate is None:
             return None
-        rate = self._motion_calibration.rate_for(
-            mode=mode,
-            axis=axis,
-            direction=direction,
-        )
         if not math.isfinite(rate) or rate <= 0.0:
             raise ValueError(f"invalid {mode} {axis} {direction} calibration rate: {rate!r}")
         return rate

@@ -6,6 +6,13 @@
 - Mount and focuser commands shall be serialized on that shared connection.
 - Closing the client shall be idempotent.
 - Mount `:Q#` and focuser `:FQ#` emergency stops shall remain available.
+- The supported ownership model shall be exclusive OnStepAdapter ownership of
+  the physical OnStep serial port.
+- Consuming applications shall route all OnStep mount, tracking, PARK/unpark,
+  status, stop, and OnStep focuser operations through OnStepAdapter.
+- Consuming applications shall not open raw serial, raw LX200 socket, INDI
+  `LX200 OnStep`, or another direct OnStep controller connection in parallel.
+- INDI may remain in use for unrelated non-OnStep hardware.
 
 ## Mechanical Safety Authority
 
@@ -71,5 +78,9 @@
 - Center correction may overlay tracking and shall preserve its prior state.
 - Angular corrections require direction-specific application-supplied
   calibration and shall be marked as requiring image verification.
+- Direction-specific calibration may be supplied or updated after construction
+  through a thread-safe public API.
+- Partial calibration shall be allowed, but an angular correction shall be
+  refused until its exact mode, axis, and direction rate is present and valid.
 - Fresh motion safety preflight and inclusive hard-limit enforcement apply to
   guide and center corrections.

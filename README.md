@@ -8,19 +8,19 @@ The distribution is named `onstep-adapter`; applications import it as
 
 ## Install
 
-Download `onstep_adapter-0.3.4-py3-none-any.whl` from the
-[v0.3.4 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.4),
+Download `onstep_adapter-0.3.5-py3-none-any.whl` from the
+[v0.3.5 GitHub release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.5),
 then install it:
 
 ```bash
-python -m pip install ./onstep_adapter-0.3.4-py3-none-any.whl
+python -m pip install ./onstep_adapter-0.3.5-py3-none-any.whl
 ```
 
 Or install directly from the release URL:
 
 ```bash
 python -m pip install \
-  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.4/onstep_adapter-0.3.4-py3-none-any.whl
+  https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.5/onstep_adapter-0.3.5-py3-none-any.whl
 ```
 
 Verify the import:
@@ -85,8 +85,12 @@ with OnStepClient(
 ```
 
 `client.mount` and `client.focuser` serialize access through one locked serial
-bus. Do not open the same OnStep serial port from another process or adapter
-instance.
+bus. The supported ownership model is **OnStepAdapter owns the physical OnStep
+serial port exclusively**. Applications must route all OnStep-owned mount,
+tracking, PARK/unpark, stop, status, and focuser operations through this client
+and must not open raw serial, LX200 socket, INDI `LX200 OnStep`, or any other
+direct OnStep connection in parallel. INDI may still be used for unrelated
+devices such as cameras, filter wheels, or non-OnStep accessories.
 
 ## PARK Position Record
 
@@ -150,6 +154,21 @@ client.mount.move_dec(-3.5, mode="center")
 Angular corrections require direction-specific calibration and always return
 `verification_required=True`. A new guide frame or plate solve must measure
 the result and close the loop.
+
+Applications that measure correction speed after startup can install or update
+calibration at runtime:
+
+```python
+client.mount.move_ra_timed("east", 500, mode="center", rate_preset=4)
+# Measure image displacement, then install the measured rate.
+client.mount.set_motion_calibration(
+    OnStepMotionCalibration(center_ra_east_arcsec_per_s=measured_rate)
+)
+client.mount.move_ra(+4.0, mode="center")
+```
+
+Partial calibration records are allowed. An angular move is accepted only when
+the specific mode, axis, and direction rate it needs is present and positive.
 
 ## Safety Model
 
