@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from onstep_adapter import OnStepSafetyError
+from onstep_adapter.safety import OnStepSafetyError
 from onstep_adapter.mount import OnStepMount
 from onstep_adapter.safety import OnStepSafetyConfig
 

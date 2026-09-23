@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from onstep_adapter import OnStepClient, OnStepSafetyConfig
+from onstep_adapter.client import OnStepClient
+from onstep_adapter.safety import OnStepSafetyConfig
 from onstep_adapter.ports.mount import MountPosition, MountState
 
 from .axis_motion_smoke import (

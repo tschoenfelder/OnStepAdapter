@@ -4,7 +4,8 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
-from onstep_adapter import OnStepClient, OnStepMotionCalibration
+from onstep_adapter.client import OnStepClient
+from onstep_adapter.results import OnStepMotionCalibration
 from onstep_adapter.serial_bus import OnStepSerialBus
 
 

@@ -1,0 +1,26 @@
+# Copy to ~/.config/onstep_adapter/config.toml on the Raspberry, then review.
+# This is for the planned INDI client, not the serial-only 0.3.5 wheel.
+[indi]
+host = "127.0.0.1"
+port = 7624
+device = "LX200 OnStep"
+safe_meridian_flip_via_home = true
+# Remains false until the post-0.4.0 supervised INDI HOME/PARK test.
+home_motion_enabled = false
+
+[observer]
+lat = 50.336
+lon = 8.533
+alt_m = 304.0
+
+[meridian]
+# Operational adapter thresholds, not OnStep firmware guard settings.
+flip_request_deg = 1.0
+tracking_stop_deg = 1.75
+flip_allowance_seconds = 120.0
+reserve_seconds = 30.0
+
+[focuser]
+# INDI currently reports FOCUS_MAX=100000. Keep this lower conservative
+# software ceiling until the physical focuser travel is verified.
+max_position = 50000

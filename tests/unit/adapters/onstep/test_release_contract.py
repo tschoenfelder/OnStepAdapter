@@ -2,30 +2,32 @@ from onstep_adapter import (
     OnStepClient,
     OnStepFocuser,
     OnStepMount,
-    OnStepMotionCalibration,
-    OnStepSafetyConfig,
-    OnStepSafetyError,
+    IndiRuntimeConfig,
+    load_indi_config,
     __version__,
 )
 import onstep_adapter
 from onstep_adapter.mount import _counterweight_safety_state
+from onstep_adapter.safety import OnStepSafetyConfig
 from pathlib import Path
 
 
 def test_public_release_surface() -> None:
-    assert __version__ == "0.3.5"
+    assert __version__ == "0.4.0"
     assert OnStepClient is not None
     assert OnStepMount is not None
     assert OnStepFocuser is not None
-    assert OnStepMotionCalibration is not None
+    assert IndiRuntimeConfig is not None
+    assert load_indi_config is not None
+    assert OnStepClient.__module__ == "onstep_adapter.indi_client"
 
 
 def test_public_surface_uses_only_onstep_adapter_namespace() -> None:
     source = open(onstep_adapter.__file__, encoding="utf-8").read()
 
     assert "smart_telescope" not in source
-    assert "from onstep_adapter.results import" in source
-    assert OnStepSafetyError is not None
+    assert "serial_bus" not in source
+    assert "from .indi_client import" in source
 
 
 def test_standalone_packaging_does_not_ship_smart_telescope_namespace() -> None:
@@ -37,6 +39,19 @@ def test_standalone_packaging_does_not_ship_smart_telescope_namespace() -> None:
         text = path.read_text(encoding="utf-8")
         assert '"smart_telescope' not in text
         assert "smart_telescope." not in text
+
+
+def test_040_wheel_manifest_is_indi_only() -> None:
+    root = Path(__file__).resolve().parents[4]
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    setup = (root / "setup.py").read_text(encoding="utf-8")
+
+    assert 'version = "0.4.0"' in pyproject
+    assert "pyserial" not in pyproject
+    for excluded in ('"client"', '"serial_bus"', '"mount"', '"focuser"'):
+        assert excluded not in setup
+    assert '"indi_client"' in setup
+    assert '"indi_focuser"' in setup
 
 
 def test_home_confirmation_is_required_by_default() -> None:

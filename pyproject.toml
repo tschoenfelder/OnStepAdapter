@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "onstep-adapter"
-version = "0.3.5"
-description = "Shared-connection Python adapter for OnStep mount and focuser control"
+version = "0.4.0"
+description = "INDI-backed Python adapter for OnStep mount and focuser control"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 authors = [{name = "Thomas Schoenfelder"}]
-dependencies = ["pyserial>=3.5"]
+dependencies = []
 keywords = ["astronomy", "telescope", "onstep", "mount", "focuser"]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -25,10 +25,10 @@ Documentation = "https://github.com/tschoenfelder/OnStepAdapter/tree/main/docs"
 Issues = "https://github.com/tschoenfelder/OnStepAdapter/issues"
 
 [tool.setuptools]
+include-package-data = false
 packages = [
   "onstep_adapter",
   "onstep_adapter.tools",
-  "onstep_adapter.ports",
 ]
 
 [tool.pytest.ini_options]

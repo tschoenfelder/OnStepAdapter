@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from onstep_adapter import OnStepMotionCalibration, OnStepSafetyError
+from onstep_adapter.results import OnStepMotionCalibration
+from onstep_adapter.safety import OnStepSafetyError
 from onstep_adapter.mount import OnStepMount
 from onstep_adapter.safety import OnStepLimitError, OnStepSafetyConfig
 
