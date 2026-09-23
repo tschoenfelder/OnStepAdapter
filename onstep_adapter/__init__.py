@@ -1,43 +1,42 @@
-"""Public import surface for the reusable OnStep adapter SDK."""
+"""INDI-only public API for the OnStep adapter."""
 
-from onstep_adapter.client import OnStepClient
-from onstep_adapter.focuser import OnStepFocuser
-from onstep_adapter.location import haversine_distance_m, round_lx200_site_degrees
-from onstep_adapter.mount import OnStepMount
-from onstep_adapter.results import (
-    AxisMotionResult,
-    FocuserMoveResult,
-    FocuserStatus,
-    OnStepConnectionResult,
-    OnStepMotionCalibration,
-    SetParkPositionResult,
-    StoredParkPosition,
-)
-from onstep_adapter.safety import (
-    OnStepSafetyConfig,
-    OnStepSafetyError,
-    SafetySeverity,
-    SafetyViolation,
-)
+from .indi_client import IndiStartupStatus, IndiSyncResult, OnStepIndiClient
+from .indi_axis_motion import AxisMotionMode, IndiAxisMoveResult
+from .indi_config import IndiRuntimeConfig, load_indi_config
+from .indi_focuser import IndiFocuser, IndiFocuserMoveResult, IndiFocuserSnapshot
+from .indi_home import IndiHomeRouteResult, IndiPositionResult, IndiUnparkResult
+from .indi_meridian import IndiMeridianState
+from .indi_mount import IndiMount
+from .indi_status import IndiMountSnapshot
+from .indi_stop import IndiStopResult
+from .indi_tracking import IndiTrackingResult
+from .meridian_policy import MeridianPolicy
 
-__version__ = "0.3.5"
+OnStepClient = OnStepIndiClient
+OnStepMount = IndiMount
+OnStepFocuser = IndiFocuser
+
+__version__ = "0.4.0"
 
 __all__ = [
-    "AxisMotionResult",
-    "FocuserMoveResult",
-    "FocuserStatus",
+    "IndiFocuserMoveResult",
+    "AxisMotionMode",
+    "IndiAxisMoveResult",
+    "IndiFocuserSnapshot",
+    "IndiHomeRouteResult",
+    "IndiMeridianState",
+    "IndiMountSnapshot",
+    "IndiPositionResult",
+    "IndiRuntimeConfig",
+    "IndiStartupStatus",
+    "IndiStopResult",
+    "IndiSyncResult",
+    "IndiTrackingResult",
+    "IndiUnparkResult",
+    "MeridianPolicy",
     "OnStepClient",
-    "OnStepConnectionResult",
     "OnStepFocuser",
     "OnStepMount",
-    "OnStepMotionCalibration",
-    "OnStepSafetyConfig",
-    "OnStepSafetyError",
-    "haversine_distance_m",
-    "round_lx200_site_degrees",
-    "SafetySeverity",
-    "SafetyViolation",
-    "SetParkPositionResult",
-    "StoredParkPosition",
+    "load_indi_config",
     "__version__",
 ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from onstep_adapter import haversine_distance_m, round_lx200_site_degrees
+from onstep_adapter.location import haversine_distance_m, round_lx200_site_degrees
 
 
 def test_haversine_distance_reports_zero_for_same_site() -> None:
