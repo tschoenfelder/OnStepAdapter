@@ -43,6 +43,33 @@ class IndiConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "flip must precede"):
                 load_indi_config(target)
 
+    def test_tracking_policy_is_explicit_and_validated(self):
+        path = Path(__file__).resolve().parents[4] / "config.indi.example.toml"
+        original = path.read_text(encoding="ascii")
+        self.assertEqual(load_indi_config(path).tracking_authority_policy, "strict")
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "config.toml"
+            target.write_text(
+                original.replace(
+                    'tracking_authority_policy = "strict"',
+                    'tracking_authority_policy = "controller_managed"',
+                ),
+                encoding="ascii",
+            )
+            self.assertEqual(
+                load_indi_config(target).tracking_authority_policy,
+                "controller_managed",
+            )
+            target.write_text(
+                original.replace(
+                    'tracking_authority_policy = "strict"',
+                    'tracking_authority_policy = "unsafe"',
+                ),
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(ValueError, "tracking_authority_policy"):
+                load_indi_config(target)
+
 
 if __name__ == "__main__":
     unittest.main()

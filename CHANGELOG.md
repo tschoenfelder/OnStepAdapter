@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.1 - 2026-09-29
+
+- Allow direct PARK from any fresh, stationary, non-tracking, fault-free
+  unparked state; HOME is no longer an artificial prerequisite.
+- Make repeated PARK idempotent when recent raw OnStep status already proves
+  the stored PARK position is active.
+- Add explicit `strict` and `controller_managed` tracking authority policies.
+  Strict remains the default; delegated authority is reported as warnings.
+- Preserve fresh transition confirmation and all hard fault, PARK, slew,
+  firmware-limit, and inclusive operational hard-stop gates. Resolves #16.
+
+## 0.4.0 - 2026-09-22
+
+- Replaced exclusive serial ownership with an in-process client of the local
+  INDI `LX200 OnStep` driver.
+- Added INDI status, time/site synchronization, meridian supervision,
+  emergency stop, focuser movement, and bounded RA/DEC axis movement.
+- Kept the unchanged INDI driver and other clients connected.
+
 ## 0.3.5 - 2026-09-21
 
 - Document exclusive OnStepAdapter serial ownership as the supported transport

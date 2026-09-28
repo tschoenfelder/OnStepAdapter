@@ -7,6 +7,10 @@ device = "LX200 OnStep"
 safe_meridian_flip_via_home = true
 # Remains false until the post-0.4.0 supervised INDI HOME/PARK test.
 home_motion_enabled = false
+# "strict" requires this client's accepted time/site and HOME authority.
+# "controller_managed" permits TRACK_ON from fresh, fault-free OnStep status
+# and reports missing authority as warnings for applications that manage it.
+tracking_authority_policy = "strict"
 
 [observer]
 lat = 50.336

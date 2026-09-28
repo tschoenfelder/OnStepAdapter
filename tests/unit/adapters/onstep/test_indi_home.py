@@ -81,14 +81,14 @@ class IndiHomeRouteTests(unittest.TestCase):
         self.assertTrue(router.authority_established)
         self.assertEqual(transport.commands, [("TELESCOPE_HOME", "GO")])
 
-    def test_park_requires_home_then_confirms_two_park_reports(self):
+    def test_direct_park_confirms_two_park_reports_without_home(self):
         transport = FakeTransport([
             status("pET260", 2),
             status("nNPET260", 3),
             status("nNPET260", 4),
-        ], initial="nNpHET260")
+        ], initial="nNpET260")
         router = IndiHomeRouter(
-            transport, FakeReader(parked=False, at_home=True), "LX200 OnStep"
+            transport, FakeReader(parked=False), "LX200 OnStep"
         )
         router.authority_established = True
 
@@ -99,13 +99,13 @@ class IndiHomeRouteTests(unittest.TestCase):
         self.assertFalse(router.authority_established)
         self.assertEqual(transport.commands, [("TELESCOPE_PARK", "PARK")])
 
-    def test_park_away_from_home_refuses_without_motion(self):
-        transport = FakeTransport([], initial="nNpET260")
+    def test_repeated_park_is_idempotently_confirmed_without_motion(self):
+        transport = FakeTransport([], initial="nNPET260")
         router = IndiHomeRouter(
-            transport, FakeReader(parked=False), "LX200 OnStep"
+            transport, FakeReader(parked=True), "LX200 OnStep"
         )
         result = router.park()
-        self.assertFalse(result.confirmed)
+        self.assertTrue(result.confirmed)
         self.assertEqual(transport.commands, [])
 
     def test_failed_park_requests_stop_but_not_home(self):

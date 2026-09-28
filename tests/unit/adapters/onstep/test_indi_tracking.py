@@ -79,6 +79,54 @@ class IndiTrackingTests(unittest.TestCase):
                 self.assertEqual(transport.commands, [])
 
     @patch("onstep_adapter.indi_tracking.time.sleep")
+    def test_controller_managed_tracking_reports_authority_warnings(self, unused_sleep):
+        current = snapshot(
+            home_authority=False, time_site_authority=False,
+            coordinates_live=False, blockers=(
+                "home_authority_unestablished",
+                "time_site_authority_unestablished",
+                "coordinates_not_fresh",
+                "hour_angle_unavailable",
+            ),
+        )
+        observations = iter([
+            current,
+            replace(current, tracking=True, status_revision=2),
+            replace(current, tracking=True, status_revision=3),
+        ])
+        transport = TrackingTransport()
+
+        result = enable_tracking_via_indi(
+            transport, "LX200 OnStep", observe=lambda: next(observations),
+            meridian_status=lambda: meridian("unknown"), emergency_stop=Mock(),
+            authority_policy="controller_managed",
+        )
+
+        self.assertTrue(result.tracking_confirmed)
+        self.assertEqual(result.authority_policy, "controller_managed")
+        self.assertIn("home_authority_unestablished", result.warnings)
+        self.assertIn("time_site_authority_unestablished", result.warnings)
+
+    def test_controller_managed_existing_track_is_not_stopped_or_reissued(self):
+        current = snapshot(
+            tracking=True, home_authority=False, time_site_authority=False,
+            blockers=("home_authority_unestablished", "time_site_authority_unestablished"),
+        )
+        transport = TrackingTransport()
+        stop = Mock()
+
+        result = enable_tracking_via_indi(
+            transport, "LX200 OnStep", observe=lambda: current,
+            meridian_status=lambda: meridian("unknown"), emergency_stop=stop,
+            authority_policy="controller_managed",
+        )
+
+        self.assertTrue(result.tracking_confirmed)
+        self.assertFalse(result.command_accepted)
+        self.assertEqual(transport.commands, [])
+        stop.assert_not_called()
+
+    @patch("onstep_adapter.indi_tracking.time.sleep")
     def test_unconfirmed_tracking_requests_emergency_stop(self, unused_sleep):
         observations = iter([
             snapshot(1), snapshot(2, tracking=True, at_limit=True),

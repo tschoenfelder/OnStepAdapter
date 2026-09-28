@@ -1,206 +1,175 @@
-# OnStep Adapter SDK
+# OnStepAdapter 0.4.1 SDK
 
-`onstep-adapter` provides one serial owner with separate mount and focuser
-interfaces.
+This release is an in-process INDI client, not a serial-port owner. It uses
+the unchanged `LX200 OnStep` device in the Raspberry's local `indiserver`.
+Python 3.13 or newer is required; there are no runtime Python dependencies.
+Install `onstep_adapter-0.4.1-py3-none-any.whl` with `python3 -m pip install`.
 
-The supported OnStep ownership model is **exclusive serial ownership by
-OnStepAdapter**. A consuming application must not open the OnStep controller
-through raw serial, raw LX200 TCP/socket, INDI `LX200 OnStep`, or another
-adapter path. All OnStep-owned capabilities used by the application must route
-through `OnStepClient.mount` and `OnStepClient.focuser`: RA/DEC correction,
-stop/abort, PARK/unpark, tracking, status, and OnStep focuser control.
+## Connection And Cleanup
 
-INDI can continue to serve unrelated hardware such as cameras, filter wheels,
-or non-OnStep accessories. If `indiserver` previously owned the OnStep serial
-port through `indi_lx200_OnStep`, remove that OnStep device from the INDI
-server before starting an application that uses OnStepAdapter.
+```python
+from onstep_adapter import OnStepClient, load_indi_config
 
-## Install
+config = load_indi_config("/home/astro/.config/onstep_adapter/config.toml")
+with OnStepClient(config=config) as client:
+    mount = client.mount.get_status()
+    focuser = client.focuser.get_status()
+    print(mount, focuser)
+```
+
+`with OnStepClient(...)` connects automatically. Call `connect()` only when
+not using the context manager. `close()`
+stops the client's own meridian supervisor and closes its INDI socket; it
+does not disconnect the shared device, stop the server, or evict other apps.
+No serial or raw LX200 fallback ships in the 0.4.1 wheel.
+
+`SAFE_MERIDIAN_FLIP` defaults to enabled. On connect, the client checks the
+installed driver's switch, enables it if needed, and verifies the readback.
+It does not restore the old shared switch state on close. Firmware meridian
+guards are read and checked against the configured operational policy.
+
+## Shared Time And Location
+
+`TIME_UTC` can be a cached or echoed INDI value, not a live OnStep clock.
+Reading it never establishes this client's time authority. There is no GPS
+time source inside the adapter. Raspberry time and the configured observer
+site may be pushed only after user approval:
+
+```python
+result = client.sync_time_location(user_approved=True)
+if result.error or not (result.time_accepted and result.location_accepted):
+    raise RuntimeError(result.error or "Time/site sync incomplete")
+```
+
+This is a shared-device write. Ask the user even if another application has
+already synced. Warn that changing time or location during tracking or
+slewing can change pointing and invalidate other clients' calculations. An
+INDI `Ok` means the driver accepted the write, not that a fresh controller
+clock readback was obtained. A fresh observed change made by another client
+invalidates this client's local baseline; an unpublished change may not be
+detectable. A new unsynced client remains read-only and must not stop an
+existing track merely because it lacks its own baseline.
+
+## Mount Status And Safety
+
+`client.mount.get_status()` returns raw compact `:GU#` status, logical
+RA/DEC, pier side, estimated HA, state, ages, authority and blockers.
+Coordinates and axis values are controller logical data, not independent
+physical sensor evidence. HOME/PARK are mechanical terminal states; their
+diagnostic sky coordinates do not constitute meridian-limit violations.
+
+`client.mount.meridian_status()` reports pre-meridian, post-meridian,
+flip-required, post-flip, hard-stop, firmware-limit or unknown state. The
+example config requests a flip at +1.0 degree and a hard stop at +1.75
+degrees, below the current firmware guard readback. The background
+supervisor runs only while the client is connected. It requests a verified
+mount stop only on fresh, authoritative unsafe evidence and retries while
+the hazard remains. This is reactive across clients: another INDI client
+could restart tracking, so OnStep firmware remains the final safeguard.
+The adapter reports exposure timing; the calling application owns capture
+completion, abortion and jog UI.
+
+`client.mount.stop()` requests INDI abort and tracking off, then waits for two
+fresh non-moving status reports. The result reports whether each write and the
+final stop were confirmed. Acknowledgement alone is not proof of a physical
+stop.
+
+`client.mount.unpark()` only leaves PARKED and disables resumed tracking; it
+does not go to HOME. `park()` moves directly to the stored PARK position from
+any fresh, stationary, non-tracking, fault-free unparked state; it does not
+require HOME. A repeated PARK is idempotent when raw OnStep status already
+proves the destination. These operations are disabled by default
+along with `go_home()` and `route_park_to_home()` because the installed driver's raw HOME `H` status has
+not yet been observed on this rig. This does not block HOME-neutral local
+movement; the supervised runner checks `H` only during final HOME -> PARK.
+`goto()` remains deliberately unavailable and there is no direct-serial escape
+hatch. `enable_tracking()` always requires fresh, fault-free OnStep status,
+an unparked stationary mount, and no hard limit. With the default
+`tracking_authority_policy="strict"`, it also requires fresh coordinates,
+accepted time/site, HOME authority, and an allowed meridian phase. With
+`"controller_managed"`, those local authority gaps are returned as warnings
+instead of blockers; the calling application deliberately accepts that the
+controller or another client owns them. Both modes require two fresh tracking
+reports after a transition and never disturb an already-running safe track.
+If an accepted transition becomes unsafe or cannot be confirmed, emergency
+stop is requested. The former 0.3.5 guide, center, PARK-record and flip
+commands are not available through 0.4.1.
+
+## RA And DEC Axis-Angle Test
+
+`mount.move_ra_axis_deg(angle)` and `mount.move_dec_axis_deg(angle)` issue a
+finite INDI coordinate target, not an indefinite manual-motion switch. Positive
+RA increases hour angle (westward); positive DEC moves northward. Both require
+fresh unparked status, tracking off, no slew/fault/limit, a stable pier side,
+and a request from 30 arcseconds through 10 degrees. HOME and time/site authority are not
+prerequisites for this terrestrial/manual operation. DEC targets are limited
+to -80 through +80 degrees. Each move monitors the path, disables tracking
+after arrival and confirms fresh stationary status. Logical coordinates are
+not independent encoder measurements; visually verify each stage. Compatibility
+aliases `move_ra(offset_arcsec, mode="manual")` and
+`move_dec(offset_arcsec, mode="manual")` accept arcseconds and report both
+`requested_arcsec` and `requested_deg`. The explicit axis methods take degrees.
+The practical 30″ floor reflects logical RA feedback resolution. Smaller
+requests fail clearly and are never rounded up. Issue #14's documented seeds
+of 110″, 159″, 195″, 283″, 897″ and 1595″ are covered by mocked paths.
+
+The runner stages PARK -> UNPARK without moving to HOME, then runs paired
++1/-1, +5/-5 and +10/-10 degrees on RA, then DEC. Every movement requires
+ENTER and physical clearance confirmation. Final HOME -> PARK also requires
+confirmation and is the separate live `H` check. ESC, `f` or Ctrl-C requests
+emergency stop and suppresses later route commands. Add `--sync-time-location`
+only when the user explicitly chooses that shared write.
 
 ```bash
-python -m pip install onstep_adapter-0.3.5-py3-none-any.whl
+python3 -m onstep_adapter.tools.indi_axis_angle_smoke \
+  --config ~/.config/onstep_adapter/config.toml \
+  --confirm-home-uat
 ```
 
-The wheel owns only the `onstep_adapter` namespace. It intentionally does not
-ship `smart_telescope/*` modules, which avoids import collisions with a real
-SmartTScope installation.
-
-Python 3.13 or newer and `pyserial>=3.5` are required.
-
-## Unrequested Tracking
-
-OnStep may resume sidereal tracking after unpark even when the host application
-did not request tracking. The SDK treats that as motion without caller
-authority. `OnStepMount` records successful explicit `enable_tracking()` calls;
-`stop()`, `park()`, `unpark()`, and verified disable clear that authority. If a
-status poll sees tracking while no authority is active, the adapter calls the
-verified tracking-disable path and reports the resulting non-tracking state.
-
-`unpark()` also guarantees this postcondition directly: a successful unpark
-must leave the mount unparked and not tracking.
-
-## Location Readback Helpers
-
-OnStep/LX200 site readback uses arcminute precision. Compare configured and
-controller sites using:
-
-```python
-from onstep_adapter import haversine_distance_m, round_lx200_site_degrees
-
-configured_lat = 50.336
-configured_lon = 8.533
-readback_lat = round_lx200_site_degrees(configured_lat)
-readback_lon = round_lx200_site_degrees(configured_lon)
-distance_m = haversine_distance_m(configured_lat, configured_lon, readback_lat, readback_lon)
-```
-
-This prevents false mismatches immediately after a successful site sync.
-
-## Shared Client
-
-```python
-from onstep_adapter import OnStepClient, OnStepSafetyConfig
-
-safety = OnStepSafetyConfig(
-    observer_lat=50.336,
-    observer_lon=8.533,
-    min_alt_deg=-5,
-    max_alt_deg=88,
-    ha_east_limit_h=-5.5,
-    ha_west_limit_h=5 / 15,
-    require_home_confirmation=True,
-)
-
-with OnStepClient("/dev/ttyUSB_ONSTEP0", safety_config=safety) as client:
-    print(client.mount.get_state())
-    print(client.focuser.status())
-```
-
-`client.mount` and `client.focuser` share one locked serial bus. `close()` is
-idempotent. Mount `:Q#` and focuser `:FQ#` emergency stops bypass the normal
-command lock.
+This command **has not been run on the mount**. `--confirm-home-uat` opts into
+the final-cleanup INDI `H` test; it does not assert a pass. Run
+only with line of sight, clearance and an available emergency stop, with no
+other mount controller issuing commands. The 0.4.0 movement gate remains open
+until the full live sequence and final PARK are confirmed.
 
 ## Focuser
 
-```python
-status = client.focuser.status()
-if status.available:
-    result = client.focuser.move_absolute(status.position + 100)
-    print(result.accepted, result.onstep_reply)
-
-client.focuser.stop()
-```
-
-The adapter enforces configured position limits before transmission.
-OnStep rejection raises `OnStepSafetyError` with a structured
-`SafetyViolation`. On the validated OnStepX 10.19d rig, `:FT#` can report
-stopped while an absolute move is visibly progressing; callers that need
-completion proof should also poll `:FG#` until the position is stable.
-
-## Meridian Operation
-
-HOME and PARK are mechanical operations. Astronomical target and tracking
-safety use time, location, RA/DEC, HA, ALT/AZ, and pier side.
-
-The application workflow:
-
-- before `0 degrees` HA: tracking allowed;
-- `0` to below `+2 degrees`: post-meridian tracking allowed;
-- at `+2 degrees`: notify the application and stop starting exposures;
-- finish the current exposure only when it fits the reported safety budget;
-- the application explicitly requests the controlled opposite-pier flip;
-- at `+5 degrees` inclusive: tracking must stop if the handoff was missed.
-
-OnStep firmware remains the final protection layer if the host application
-fails.
-
-## PARK Records
-
-`set_park_position_from_current(confirmed_safe=True)` sends documented OnStep
-Set-Park `:hQ#` only after verifying trusted HOME authority, stationary and
-non-tracking state, no limit/fault, and a writable persistent calibration
-destination. `allow_at_home=False` prevents accidentally replacing PARK with
-HOME.
-
-OnStep has no documented stored-PARK readback command.
-`get_stored_park_position()` therefore returns the SDK capture made when it
-last successfully sent `:hQ#`, including source, trust, and invalidation
-fields. It does not claim independent controller verification.
-
-## Bounded Axis Corrections
-
-- `move_ra_timed()` and `move_dec_timed()` support safe manual nudges.
-- `mode="manual"` on timed RA/DEC motion is for deliberate non-astronomical
-  terrestrial jogs with tracking off. It may run at confirmed mechanical HOME,
-  skips RA/DEC target projection, and still honors mechanical safety blockers,
-  OnStep fault/limit status, duration bounds, and the motion lock.
-- Timed RA/DEC motion accepts `rate_preset=0..9` to send `:R0#` through
-  `:R9#` instead of the mode default rate. The selected preset is scoped to
-  that one bounded move, and guide rate is restored afterward.
-- `move_ra()` and `move_dec()` accept signed on-image arcseconds and require a
-  direction-specific `OnStepMotionCalibration` rate for the requested
-  mode/axis/direction.
-- `set_motion_calibration()` and `get_motion_calibration()` allow applications
-  to install measured rates after the client has already been constructed.
-- Partial calibration records are allowed, so bootstrap workflows can install
-  only the rates they have measured.
-- `mode="manual"` is rejected by angular `move_ra()` and `move_dec()` because
-  those APIs describe sky offsets that require astronomical context.
-- Guide mode uses `:RG#` and native `:Mg...#` pulse guiding.
-- Center mode uses `:RC#`, directional movement, and a guaranteed matching
-  direction stop.
-- Tracking remains active and guide rate is restored after centering.
-- Calls are serialized and bounded; no indefinite public start/stop API exists.
-- Angular movement is estimated and must be verified from a new camera frame.
-
-Bootstrap flow for a camera-measured mount:
+`client.focuser.get_status()` returns position, INDI driver maximum,
+configured maximum, moving state and blockers. Set `[focuser].max_position`
+in the installation TOML; no focuser move is accepted without it. The
+effective ceiling is the lower of the driver readback and that configured
+number. On this rig INDI repeatedly reports `FOCUS_MAX=100000`; the example
+caps moves at 50000 because the full physical travel is not certified.
+The maximum is a static INDI property and need not update periodically;
+position must be fresh and non-conflicting.
 
 ```python
-# 1. Use timed motion while uncalibrated.
-client.mount.move_ra_timed("east", 500, mode="center", rate_preset=4)
-
-# 2. Measure the achieved sky/image displacement in the consuming application.
-measured_rate = measured_arcsec / 0.5
-
-# 3. Install just the measured direction, or a full calibration if available.
-client.mount.set_motion_calibration(
-    OnStepMotionCalibration(center_ra_east_arcsec_per_s=measured_rate)
-)
-
-# 4. Arcsecond moves are now available for that calibrated direction.
-client.mount.move_ra(+3.0, mode="center")
+status = client.focuser.get_status()
+if status.move_ready:
+    result = client.focuser.move_absolute(status.position + 100, timeout=30)
+    if not result.reached:
+        raise RuntimeError(result.error)
 ```
 
-## Supervised Motion Validation
+`move_absolute()` waits for two fresh target-position confirmations and
+requests `FOCUS_ABORT_MOTION` on a fault or timeout. `stop()` can issue abort
+while a move is in progress and confirms a stable position. The abort path
+does not need time/site or HOME authority. Do not infer a stopped motor from
+the direction-switch values alone.
 
-Small guide and center corrections:
+On 2026-09-22 a bounded live INDI test moved the focuser 15145 -> 16145 ->
+15145. Fresh position updates confirmed both endpoints; two fresh `:GU#`
+reports confirmed PARKED before and after each leg. An independent final
+query again showed 15145 and PARKED. This was a remote protocol test, not
+visual certification of full physical focuser travel.
 
-```bash
-python -m onstep_adapter.tools.axis_motion_smoke \
-  --port /dev/ttyUSB_ONSTEP0 \
-  --observer-lat 50.336 \
-  --observer-lon 8.533 \
-  --observer-alt-m 304 \
-  --confirm-time-location-sync
-```
+## Release Scope
 
-Visually observable independent coordinate movement:
-
-```bash
-python -m onstep_adapter.tools.coordinate_axis_smoke \
-  --port /dev/ttyUSB_ONSTEP0 \
-  --observer-lat 50.336 \
-  --observer-lon 8.533 \
-  --observer-alt-m 304 \
-  --confirm-time-location-sync
-```
-
-The second command moves RA `+1 h`, DEC `+10 degrees`, RA `-1 h`, and DEC
-`-10 degrees`, then requires final confirmation before HOME-to-PARK. Both
-commands passed on the physically tested Terrans OnStep V4.
-
-## Cleanup
-
-Always use the context manager or call `client.close()`. Applications that
-also own a GPS daemon connection should close that service before closing the
-shared OnStep client during shutdown and explicit disconnect.
+0.4.0 was built as a pure-Python wheel, installed in an isolated directory
+on Raspberry Python 3.13, and imported without serial modules. The source
+suite passed 172 tests plus 5 subtests. The read-only public client was
+connected to the actual local INDI driver. The live HOME `H`, HOME/PARK
+movement, meridian stop, and astronomical motion paths have **not** been
+physically accepted through INDI. Their dependent public operations remain
+disabled. Historical direct-serial behavior is documented by the 0.3.5 tag,
+not by this wheel.
