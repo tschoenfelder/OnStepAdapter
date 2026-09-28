@@ -251,6 +251,7 @@ class OnStepIndiClient:
             self._transport, self.device, observe=self.observe_mount,
             meridian_status=self.meridian_status,
             emergency_stop=self.emergency_stop, timeout=timeout,
+            authority_policy=self._config.tracking_authority_policy,
         )
 
     def route_park_to_home(
@@ -279,7 +280,7 @@ class OnStepIndiClient:
         return self._home_router.go_home(timeout=timeout)
 
     def park(self, *, timeout: float = 120.0) -> IndiPositionResult:
-        """Explicitly move from confirmed HOME to OnStep PARK."""
+        """Explicitly move directly to OnStep's stored PARK position."""
         self._require_home_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")

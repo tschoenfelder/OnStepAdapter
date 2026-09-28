@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "onstep-adapter"
-version = "0.4.0"
+version = "0.4.1"
 description = "INDI-backed Python adapter for OnStep mount and focuser control"
 readme = "README.md"
 requires-python = ">=3.13"

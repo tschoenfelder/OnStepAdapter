@@ -76,17 +76,16 @@ class IndiHomeRouter:
         return self._move_to_home(timeout=timeout)
 
     def park(self, *, timeout: float = 120.0) -> IndiPositionResult:
-        """Move from confirmed HOME to stored PARK; never silently route via HOME."""
+        """Move directly to stored PARK; never silently route via HOME."""
         before = self.reader.read()
-        if (
-            not self._ready(before) or not before.at_home or before.parked or
-            before.slewing or before.tracking
-        ):
+        if not self._ready(before) or before.slewing or before.tracking:
             return IndiPositionResult(
                 "park", False, before.raw_status,
-                "Fresh HOME, stationary, non-tracking status is required", None,
+                "Fresh stationary, non-tracking and fault-free status is required", None,
             )
         self.authority_established = False
+        if before.parked:
+            return IndiPositionResult("park", True, before.raw_status, None, None)
         return self._move_to_position(
             destination="park", property_name="TELESCOPE_PARK", element="PARK",
             predicate=lambda decoded: (

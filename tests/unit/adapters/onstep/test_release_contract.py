@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 def test_public_release_surface() -> None:
-    assert __version__ == "0.4.0"
+    assert __version__ == "0.4.1"
     assert OnStepClient is not None
     assert OnStepMount is not None
     assert OnStepFocuser is not None
@@ -46,7 +46,7 @@ def test_040_wheel_manifest_is_indi_only() -> None:
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     setup = (root / "setup.py").read_text(encoding="utf-8")
 
-    assert 'version = "0.4.0"' in pyproject
+    assert 'version = "0.4.1"' in pyproject
     assert "pyserial" not in pyproject
     for excluded in ('"client"', '"serial_bus"', '"mount"', '"focuser"'):
         assert excluded not in setup

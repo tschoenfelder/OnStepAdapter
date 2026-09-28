@@ -1,6 +1,87 @@
 # OnStep Adapter Requirements
 
-## Connection
+## Target Architecture: Local INDI
+
+The accepted [INDI architecture decision](INDI_ARCHITECTURE.md) governs the
+0.4.1 wheel. Its public client and packaged modules use INDI only. The
+direct-serial 0.3.5 model below is retained as historical requirements, not
+as a fallback available in 0.4.0. HOME-dependent mount motion, astronomical
+goto/tracking, axis jog, guiding and PARK-record writes are outstanding and
+fail closed or are absent from the 0.4.0 public API.
+
+- The adapter shall use the unchanged local INDI OnStep driver exclusively,
+  without direct serial or raw-controller fallback.
+- It shall run inside each Python application; no persistent service is added.
+- Other INDI clients may remain connected and send commands without eviction.
+- While connected, supervision shall request and verify stops for observed
+  unsafe motion regardless of the initiating client.
+- Close shall release only local resources, leaving the shared device/server
+  and other clients connected. Supervision ends with the client lifetime.
+- No GPS time authority is built into the planned INDI adapter. Raspberry
+  system time is the operator-selected source. Before its own astronomical
+  motion, each controlling application shall ask its user to approve
+  time/location synchronization or explicitly accept an existing session
+  baseline; it shall not push either value automatically on connection.
+- User-approved INDI Sync may be issued while another client is tracking or
+  slewing, after warning that a mid-motion time/site change can alter pointing
+  and other clients' safety calculations. It shall not automatically stop the
+  mount. An Ok acknowledgement establishes this client's accepted sync
+  authority, not independent OnStep clock readback; a failed sync does not.
+- Cached `TIME_UTC` alone shall not establish a new client's time authority.
+  Without an accepted baseline, refuse that client's dependent motion, not
+  read-only observation, emergency stop, or another client's existing track.
+- Time and location are shared across INDI clients. Observed external changes
+  shall invalidate the adapter's safety baseline; changes not published by
+  the driver may be undetectable, and this limitation shall be exposed.
+  Exposure control belongs to the calling application.
+- A newly connected client lacking its own time/site baseline shall not stop
+  another client's existing tracking for that reason alone. It shall refuse
+  only its own dependent commands until ready; intervention in existing motion
+  requires affirmative, fresh evidence of danger.
+- Meridian flip and stop thresholds, allowance and reserve shall be loaded
+  from per-installation runtime configuration and checked against live
+  firmware guards. The +1/+1.75-degree proposal is not a hard-coded constant.
+- A calling application may provide a jog UI and request signed, bounded
+  RA-axis or DEC-axis rotations (for example +1 or -5 degrees). The adapter
+  shall not own the UI or interpret those values as on-sky RA or extra HA
+  allowance. Axis-angle operations shall be named distinctly from existing
+  on-sky arcsecond corrections. It shall preflight path and endpoint, supervise,
+  and verify a stop on completion, cancellation, timeout, disconnect or an
+  unsafe state. A client press-and-hold UI must not rely on indefinite motion.
+- Manual/local angular RA/DEC movement shall be HOME-neutral and shall not
+  require trusted astronomical time. It is permitted at HOME or safely
+  unparked away from HOME when tracking is off, fresh state is available,
+  no fault/limit/slew is active, and the bounded endpoint is accepted. It
+  shall never force a HOME transition. This implements GitHub issue #12.
+- INDI tracking enable shall default to strict astronomical authority and a
+  safe live meridian state. An explicit per-client `controller_managed` policy
+  may delegate time/site, HOME, coordinate and meridian authority while still
+  requiring fresh OnStep status and enforcing PARK, slew, fault, firmware
+  limit and inclusive hard-stop blockers. Delegated gaps shall be warnings.
+  A newly connected client shall not alter an already-running track solely
+  because it lacks local authority. A real `TRACK_ON` transition shall require
+  two fresh tracking reports. Accepted but unconfirmed or unsafe activation
+  shall request emergency stop.
+  Local angular movement shall support every documented issue #14 calibration
+  seed (minimum 110 arcseconds), use scaled verification tolerances, and reject
+  unsupported smaller requests explicitly without clamping or rounding.
+- Missing mandatory INDI safety capabilities shall refuse dependent motion,
+  rather than weakening safety checks or bypassing the server.
+- Each 0.4.0 feature shall update user-facing installation, API and safety
+  documentation alongside implementation and tests. Release requires the
+  documented examples to run against the built wheel and must distinguish
+  implemented behavior from planned behavior.
+- The planned INDI client shall default `safe_meridian_flip_via_home` to true,
+  enable and verify the installed driver's HOME-route switch on connection,
+  recheck it before flips and after reconnect, and refuse flips when unverified.
+  It shall not disable the shared switch on close. Setting the option false
+  shall suppress automatic activation without permitting an unsafe fallback.
+- PARK shall be a direct move to the stored controller PARK position from any
+  fresh, stationary, non-tracking and fault-free unparked state. It shall not
+  require or implicitly route through HOME. PARK shall be idempotent when
+  recent raw OnStep status already proves the requested state.
+
+## Released 0.3.5 Connection Model
 
 - The adapter shall own exactly one serial connection per controller.
 - Mount and focuser commands shall be serialized on that shared connection.

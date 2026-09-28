@@ -23,6 +23,7 @@ class IndiRuntimeConfig:
     safe_meridian_flip_via_home: bool
     focuser_max_position: int | None = None
     home_motion_enabled: bool = False
+    tracking_authority_policy: str = "strict"
 
 
 def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
@@ -50,6 +51,9 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
                 if "focuser" in data and "max_position" in data["focuser"] else None
             ),
             home_motion_enabled=indi.get("home_motion_enabled", False),
+            tracking_authority_policy=str(
+                indi.get("tracking_authority_policy", "strict")
+            ),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"Invalid INDI configuration: {exc}") from exc
@@ -59,6 +63,10 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         raise ValueError("safe_meridian_flip_via_home must be boolean")
     if not isinstance(result.home_motion_enabled, bool):
         raise ValueError("home_motion_enabled must be boolean")
+    if result.tracking_authority_policy not in {"strict", "controller_managed"}:
+        raise ValueError(
+            "tracking_authority_policy must be 'strict' or 'controller_managed'"
+        )
     numeric = (
         result.observer_lat,
         result.observer_lon,

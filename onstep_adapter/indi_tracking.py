@@ -19,6 +19,8 @@ class IndiTrackingResult:
     final_raw_status: str | None
     meridian_phase: str
     error: str | None = None
+    warnings: tuple[str, ...] = ()
+    authority_policy: str = "strict"
 
 
 def enable_tracking_via_indi(
@@ -29,38 +31,51 @@ def enable_tracking_via_indi(
     meridian_status: Callable[[], IndiMeridianState],
     emergency_stop: Callable[[], object],
     timeout: float = 8.0,
+    authority_policy: str = "strict",
 ) -> IndiTrackingResult:
-    """Enable tracking only from a fresh, astronomically authorized state."""
+    """Enable tracking under strict or explicit controller-managed authority."""
+    if authority_policy not in {"strict", "controller_managed"}:
+        raise ValueError("Unknown tracking authority policy")
     before = observe()
     meridian = meridian_status()
-    blockers = {
+    hard_blockers = {
         "indi_device_disconnected", "onstep_status_not_fresh",
-        "coordinates_not_fresh", "onstep_status_alert",
+        "onstep_status_alert",
         "onstep_status_unavailable", "onstep_limit_or_park_fault",
-        "onstep_reported_error", "pier_side_conflict", "pier_side_unknown",
+        "onstep_reported_error",
+    }.intersection(before.blockers)
+    authority_blockers = {
+        "coordinates_not_fresh", "pier_side_conflict", "pier_side_unknown",
         "coordinates_invalid", "time_site_authority_unestablished",
         "hour_angle_unavailable", "home_authority_unestablished",
         "mechanical_terminal_state",
     }.intersection(before.blockers)
+    warnings = tuple(sorted(authority_blockers))
     allowed_phases = {
         "pre_meridian_allowed", "post_meridian_allowed", "post_flip",
     }
-    if (
-        blockers or not before.status_live or not before.coordinates_live or
+    strict_refusal = authority_policy == "strict" and (
+        authority_blockers or not before.coordinates_live or
         not before.time_site_authority or not before.home_authority or
-        before.parked or before.at_home or before.slewing or before.at_limit or
-        meridian.phase not in allowed_phases or meridian.tracking_stop_required
+        before.at_home or meridian.phase not in allowed_phases
+    )
+    if (
+        hard_blockers or not before.status_live or before.parked or
+        before.slewing or before.at_limit or strict_refusal or
+        meridian.tracking_stop_required
     ):
         reason = (
-            f"tracking preflight refused: blockers={sorted(blockers)} "
+            f"tracking preflight refused: blockers={sorted(hard_blockers | authority_blockers)} "
             f"phase={meridian.phase}"
         )
         return IndiTrackingResult(
-            False, False, 0, before.raw_status, meridian.phase, reason
+            False, False, 0, before.raw_status, meridian.phase, reason,
+            warnings, authority_policy,
         )
     if before.tracking:
         return IndiTrackingResult(
-            False, True, 2, before.raw_status, meridian.phase, None
+            False, True, 2, before.raw_status, meridian.phase, None,
+            warnings, authority_policy,
         )
 
     accepted = False
@@ -80,10 +95,12 @@ def enable_tracking_via_indi(
                 continue
             last_revision = current.status_revision
             last_raw = current.raw_status
-            if current.at_limit or current.parked or current.at_home:
+            if current.at_limit or current.parked or (
+                authority_policy == "strict" and current.at_home
+            ):
                 raise RuntimeError("Unsafe state appeared while enabling tracking")
             current_meridian = meridian_status()
-            if (
+            if authority_policy == "strict" and (
                 current_meridian.phase not in allowed_phases or
                 current_meridian.tracking_stop_required
             ):
@@ -92,11 +109,13 @@ def enable_tracking_via_indi(
                 )
             stable = stable + 1 if current.tracking and not current.slewing else 0
         return IndiTrackingResult(
-            True, True, stable, last_raw, meridian.phase, None
+            True, True, stable, last_raw, meridian.phase, None,
+            warnings, authority_policy,
         )
     except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
         if accepted:
             emergency_stop()
         return IndiTrackingResult(
-            accepted, False, 0, before.raw_status, meridian.phase, str(exc)
+            accepted, False, 0, before.raw_status, meridian.phase, str(exc),
+            warnings, authority_policy,
         )
