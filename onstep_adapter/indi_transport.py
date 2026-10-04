@@ -196,8 +196,8 @@ class IndiTransport:
     def issue_number(
         self, device: str, name: str, element: str, value: float,
         *, timeout: float = 3.0,
-    ) -> None:
-        """Start a long-running number action; caller verifies live completion."""
+    ) -> int:
+        """Start a number action and return the pre-command property revision."""
         if not math.isfinite(value):
             raise ValueError("INDI number value must be finite")
         before = self.wait_property(device, name, timeout=timeout)
@@ -208,6 +208,7 @@ class IndiTransport:
             f"<oneNumber name={quoteattr(element)}>{format(value, '.12g')}</oneNumber>"
             "</newNumberVector>"
         )
+        return before.revision
 
     def issue_numbers(
         self, device: str, name: str, values: dict[str, float],

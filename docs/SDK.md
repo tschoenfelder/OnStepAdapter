@@ -1,9 +1,9 @@
-# OnStepAdapter 0.4.1 SDK
+# OnStepAdapter 0.5.0 SDK
 
 This release is an in-process INDI client, not a serial-port owner. It uses
 the unchanged `LX200 OnStep` device in the Raspberry's local `indiserver`.
 Python 3.13 or newer is required; there are no runtime Python dependencies.
-Install `onstep_adapter-0.4.1-py3-none-any.whl` with `python3 -m pip install`.
+Install `onstep_adapter-0.5.0-py3-none-any.whl` with `python3 -m pip install`.
 
 ## Connection And Cleanup
 
@@ -21,7 +21,7 @@ with OnStepClient(config=config) as client:
 not using the context manager. `close()`
 stops the client's own meridian supervisor and closes its INDI socket; it
 does not disconnect the shared device, stop the server, or evict other apps.
-No serial or raw LX200 fallback ships in the 0.4.1 wheel.
+No serial or raw LX200 fallback ships in the 0.5.0 wheel.
 
 `SAFE_MERIDIAN_FLIP` defaults to enabled. On connect, the client checks the
 installed driver's switch, enables it if needed, and verifies the readback.
@@ -92,8 +92,43 @@ instead of blockers; the calling application deliberately accepts that the
 controller or another client owns them. Both modes require two fresh tracking
 reports after a transition and never disturb an already-running safe track.
 If an accepted transition becomes unsafe or cannot be confirmed, emergency
-stop is requested. The former 0.3.5 guide, center, PARK-record and flip
-commands are not available through 0.4.1.
+stop is requested. PARK-record and application-controlled flip operations
+from the former 0.3.5 API remain unavailable.
+
+## Tracking-Preserving Guide Pulses
+
+Astronomical guiding and guide-assisted reacquisition use INDI's timed-guide
+properties while sidereal tracking remains active:
+
+```python
+result = client.mount.guide_pulse("north", 200)
+if not result.pulse_completed:
+    raise RuntimeError(result.error)
+```
+
+Accepted directions are `north`, `south`, `east`, `west` and `n/s/e/w`.
+Durations are integer milliseconds from 20 through 5000. Requests longer
+than 500 ms are split into bounded chunks so the adapter can obtain a fresh
+status and meridian decision between chunks. The result reports requested
+and completed chunks, tracking preservation, final raw status, meridian
+phase, warnings and any error. `mount.guide()` remains as a boolean
+compatibility wrapper.
+
+The mount must be connected, unparked, away from HOME, tracking, stationary,
+and free of OnStep faults or limits. The inclusive operational hard stop and
+firmware limit always refuse a pulse. With strict authority, fresh
+coordinates, pier side, time/site, HOME authority and an allowed meridian
+phase are also required. With `tracking_authority_policy="controller_managed"`,
+delegated authority gaps are warnings, but the live hardware blockers remain
+mandatory. `flip_required` is permitted and returned as
+`meridian_flip_required`; the calling application should finish its bounded
+reacquisition promptly and perform its normal flip workflow.
+
+These pulses do not promise a specific angular displacement. The calling
+guider calibrates milliseconds per image displacement and closes the loop
+with another frame. On command failure or lost safe tracking after a pulse,
+the adapter requests emergency stop. This 0.5.0 path has mocked protocol and
+safety coverage; its first physical pulse should remain supervised.
 
 ## RA And DEC Axis-Angle Test
 

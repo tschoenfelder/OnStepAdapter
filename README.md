@@ -1,8 +1,8 @@
-# OnStepAdapter 0.4.1
+# OnStepAdapter 0.5.0
 
 Python 3.13+ access to an OnStep mount and focuser through an existing local
 INDI server and its unchanged `LX200 OnStep` driver. The package is
-`onstep-adapter`; the import is `onstep_adapter`. Version 0.4.1 does not open
+`onstep-adapter`; the import is `onstep_adapter`. Version 0.5.0 does not open
 the controller's serial port, run a daemon, or disconnect other INDI clients.
 
 This is a deliberately restricted INDI release. It provides shared status,
@@ -19,7 +19,7 @@ Do not install 0.4.0 expecting the direct-serial 0.3.5 API.
 Install the local wheel on the Raspberry (Python 3.13 or newer):
 
 ```bash
-python3 -m pip install ./onstep_adapter-0.4.1-py3-none-any.whl
+python3 -m pip install ./onstep_adapter-0.5.0-py3-none-any.whl
 python3 -c 'import onstep_adapter; print(onstep_adapter.__version__)'
 ```
 
@@ -71,6 +71,32 @@ motion; it does not justify interfering with another client's existing track.
 An INDI client cannot prevent a different client from restarting tracking
 after a stop. OnStep firmware remains the final cross-client safeguard.
 
+## Astronomical Guide Pulses
+
+While the mount is already tracking, applications may apply bounded guide
+pulses without disabling tracking:
+
+```python
+result = client.mount.guide_pulse("east", 250)
+if not result.pulse_completed:
+    raise RuntimeError(result.error)
+```
+
+The adapter uses the standard INDI `TELESCOPE_TIMED_GUIDE_WE` and
+`TELESCOPE_TIMED_GUIDE_NS` properties. North, south, east and west are
+supported, including their one-letter aliases. Pulses are limited to 20-5000
+ms and internally chunked to recheck fresh safety state during longer calls.
+Tracking must already be active; PARK, HOME, slew, fault, firmware limit and
+the inclusive operational hard stop are refused. A flip recommendation is
+reported as a warning but does not suppress a still-safe guide pulse.
+
+This is the primitive for astronomical guide-assisted star reacquisition. The
+calling application owns image analysis, pulse calibration, convergence and
+the decision to start another exposure. It must not substitute terrestrial
+axis movement while tracking. The compatibility `guide(direction,
+duration_ms)` method returns a boolean; new code should use the structured
+`guide_pulse()` result.
+
 ## Focuser
 
 When the mount is confirmed parked, the 0.4.0 focuser supports bounded
@@ -115,8 +141,8 @@ They support 30 arcseconds through 10 degrees and require fresh unparked,
 stationary, non-tracking and fault-free state,
 but neither HOME nor clock authority. Their 1/5/10-degree mock cases pass;
 the supervised mount test has **not** passed. Requests below 30″ are refused,
-never rounded. Guide, PARK-record and application-controlled flip
-commands from 0.3.5 have not been ported; no serial fallback is provided.
+never rounded. PARK-record and application-controlled flip commands from
+0.3.5 have not been ported; no serial fallback is provided.
 
 The installed driver appears to publish OnStep's `H` HOME flag in raw status,
 but this has not been physically checked through INDI on this rig. Local

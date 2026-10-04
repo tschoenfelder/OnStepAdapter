@@ -23,6 +23,7 @@ class SelectiveBuildPy(build_py):
             "indi_tracking",
             "indi_home",
             "indi_focuser",
+            "indi_guiding",
             "indi_meridian",
             "indi_mount",
             "meridian_policy",

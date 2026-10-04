@@ -9,6 +9,7 @@ from typing import Callable
 from .indi_config import IndiRuntimeConfig
 from .indi_axis_motion import AxisMotionMode, IndiAxisMover, IndiAxisMoveResult
 from .indi_focuser import IndiFocuser
+from .indi_guiding import IndiGuideController, IndiGuidePulseResult
 from .indi_home import IndiHomeRouteResult, IndiHomeRouter, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState, IndiMeridianSupervisor, classify_meridian
 from .indi_mount import IndiMount
@@ -80,6 +81,7 @@ class OnStepIndiClient:
         self._status_reader: IndiStatusReader | None = None
         self._home_router: IndiHomeRouter | None = None
         self._axis_mover: IndiAxisMover | None = None
+        self._guide_controller: IndiGuideController | None = None
         self._supervisor: IndiMeridianSupervisor | None = None
         self._policy: MeridianPolicy | None = None
         self.mount = IndiMount(self)
@@ -136,6 +138,7 @@ class OnStepIndiClient:
         self._status_reader = None
         self._home_router = None
         self._axis_mover = None
+        self._guide_controller = None
         try:
             self._transport.connect(timeout=timeout)
             connected = self._transport.wait_property(self.device, "CONNECTION", timeout=timeout)
@@ -192,6 +195,12 @@ class OnStepIndiClient:
                     self._config.observer_lon, self.observe_mount,
                     self.emergency_stop,
                 )
+                self._guide_controller = IndiGuideController(
+                    self._transport, self.device, observe=self.observe_mount,
+                    meridian_status=self.meridian_status,
+                    emergency_stop=self.emergency_stop,
+                    authority_policy=self._config.tracking_authority_policy,
+                )
                 self._supervisor = IndiMeridianSupervisor(
                     observe=self.observe_mount, policy=policy, stop=self.emergency_stop
                 )
@@ -230,6 +239,15 @@ class OnStepIndiClient:
         if self._policy is None:
             raise ConnectionError("INDI client is not connected")
         return classify_meridian(self.observe_mount(), self._policy)
+
+    def guide_pulse(
+        self, direction: str, duration_ms: int, *, command_timeout: float = 3.0,
+    ) -> IndiGuidePulseResult:
+        if self._guide_controller is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        return self._guide_controller.pulse(
+            direction, duration_ms, command_timeout=command_timeout
+        )
 
     def start_supervision(self) -> None:
         if self._supervisor is None or not self._transport.is_open:
@@ -368,6 +386,7 @@ class OnStepIndiClient:
             self._accepted_site_values = None
             self._status_reader = None
             self._axis_mover = None
+            self._guide_controller = None
             self._home_router = None
             self._transport.close()
 
