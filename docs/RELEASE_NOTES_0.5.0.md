@@ -6,6 +6,8 @@
   guide properties.
 - North, south, east and west directions with bounded 20-5000 ms durations.
 - Safety rechecks between 500 ms chunks for longer requests.
+- Hardware-completion verification using the OnStep compact-status `G` flag;
+  INDI `Ok` is treated only as command acceptance.
 - Structured guide results and a boolean compatibility wrapper.
 - Strict and controller-managed astronomical authority behavior consistent
   with tracking enable.

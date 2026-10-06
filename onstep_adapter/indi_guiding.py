@@ -50,6 +50,17 @@ _STRICT_ALLOWED_PHASES = {
 }
 
 
+class _GuideSafetyError(RuntimeError):
+    def __init__(
+        self, message: str, snapshot: IndiMountSnapshot,
+        meridian: IndiMeridianState, warnings: tuple[str, ...],
+    ) -> None:
+        super().__init__(message)
+        self.snapshot = snapshot
+        self.meridian = meridian
+        self.warnings = warnings
+
+
 @dataclass(frozen=True)
 class IndiGuidePulseResult:
     direction: GuideDirection
@@ -78,6 +89,8 @@ class IndiGuideController:
         emergency_stop: Callable[[], object],
         authority_policy: str = "strict",
         chunk_ms: int = GUIDE_CHUNK_MS,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         if authority_policy not in {"strict", "controller_managed"}:
             raise ValueError("Unknown guiding authority policy")
@@ -90,6 +103,8 @@ class IndiGuideController:
         self.emergency_stop = emergency_stop
         self.authority_policy = authority_policy
         self.chunk_ms = chunk_ms
+        self.monotonic = monotonic
+        self.sleeper = sleeper
         self._lock = threading.Lock()
 
     @staticmethod
@@ -188,6 +203,7 @@ class IndiGuideController:
                     )
 
                 property_name, element = _GUIDE_PROPERTIES[normalized]
+                chunk_started = self.monotonic()
                 revision = self.transport.issue_number(
                     self.device, property_name, element, chunk,
                     timeout=command_timeout,
@@ -197,6 +213,18 @@ class IndiGuideController:
                     property_name, after_revision=revision,
                     timeout=command_timeout + chunk / 1000.0,
                 )
+                nominal_remaining = chunk / 1000.0 - (
+                    self.monotonic() - chunk_started
+                )
+                if nominal_remaining > 0:
+                    self.sleeper(nominal_remaining)
+                (
+                    last_snapshot, last_meridian, completion_warnings,
+                ) = self._wait_onstep_guide_idle(
+                    after_status_revision=snapshot.status_revision,
+                    timeout=command_timeout,
+                )
+                warnings.update(completion_warnings)
                 completed += 1
 
             snapshot, meridian, current_warnings, refusal = self._preflight()
@@ -211,6 +239,10 @@ class IndiGuideController:
                 tuple(sorted(warnings)), None,
             )
         except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+            if isinstance(exc, _GuideSafetyError):
+                last_snapshot = exc.snapshot
+                last_meridian = exc.meridian
+                warnings.update(exc.warnings)
             stop_error = None
             if issued:
                 try:
@@ -246,3 +278,26 @@ class IndiGuideController:
                 raise RuntimeError(f"INDI rejected guide pulse {property_name}")
             if state in {"ok", "idle"}:
                 return
+
+    def _wait_onstep_guide_idle(
+        self, *, after_status_revision: int, timeout: float,
+    ) -> tuple[IndiMountSnapshot, IndiMeridianState, tuple[str, ...]]:
+        """Require a post-command OnStep status after the hardware pulse ends."""
+        deadline = self.monotonic() + timeout
+        latest_revision = after_status_revision
+        while True:
+            snapshot, meridian, warnings, refusal = self._preflight()
+            if refusal:
+                raise _GuideSafetyError(
+                    refusal, snapshot, meridian, warnings
+                )
+            if snapshot.status_revision > latest_revision:
+                latest_revision = snapshot.status_revision
+                if not snapshot.guiding:
+                    return snapshot, meridian, warnings
+            if self.monotonic() >= deadline:
+                raise TimeoutError(
+                    "OnStep still reports guide pulse active or did not publish "
+                    "a fresh post-guide status"
+                )
+            self.sleeper(min(0.05, max(0.0, deadline - self.monotonic())))

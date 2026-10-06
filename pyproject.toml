@@ -31,6 +31,9 @@ packages = [
   "onstep_adapter.tools",
 ]
 
+[tool.setuptools.package-data]
+onstep_adapter = ["config.indi.example.toml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

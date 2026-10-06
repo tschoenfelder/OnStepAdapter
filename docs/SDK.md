@@ -114,6 +114,13 @@ and completed chunks, tracking preservation, final raw status, meridian
 phase, warnings and any error. `mount.guide()` remains as a boolean
 compatibility wrapper.
 
+The INDI number-property `Ok` state acknowledges command acceptance only.
+It does not prove that the hardware pulse has elapsed. The adapter waits the
+nominal duration of each chunk and then requires a newer compact OnStep status
+without `G` (`pulse guide active`) before issuing the next chunk or reporting
+completion. A missing status transition or a `G` flag that does not clear is
+a failed pulse and requests emergency stop.
+
 The mount must be connected, unparked, away from HOME, tracking, stationary,
 and free of OnStep faults or limits. The inclusive operational hard stop and
 firmware limit always refuse a pulse. With strict authority, fresh

@@ -49,6 +49,7 @@ def test_050_wheel_manifest_is_indi_only() -> None:
     setup = (root / "setup.py").read_text(encoding="utf-8")
 
     assert 'version = "0.5.0"' in pyproject
+    assert 'onstep_adapter = ["config.indi.example.toml"]' in pyproject
     assert "pyserial" not in pyproject
     for excluded in ('"client"', '"serial_bus"', '"mount"', '"focuser"'):
         assert excluded not in setup

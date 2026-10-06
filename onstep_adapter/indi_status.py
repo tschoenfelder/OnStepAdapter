@@ -38,6 +38,7 @@ class IndiMountSnapshot:
     blockers: tuple[str, ...]
     status_revision: int = -1
     coordinates_revision: int = -1
+    guiding: bool = False
 
 
 class IndiStatusReader:
@@ -149,6 +150,7 @@ class IndiStatusReader:
             blockers=tuple(dict.fromkeys(blockers)),
             status_revision=status.revision if status is not None else -1,
             coordinates_revision=coords.revision if coords is not None else -1,
+            guiding=bool(decoded.get("guiding")),
         )
 
     def _live(self, name: str, prop: IndiProperty | None) -> tuple[bool, float | None]:

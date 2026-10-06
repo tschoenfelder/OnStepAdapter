@@ -20,6 +20,7 @@ def decode_gu(value: str) -> dict[str, object]:
     tracking = "n" not in flags
     slewing = "N" not in flags
     at_home = "H" in flags
+    guiding = "G" in flags
     pier_side = "east" if "T" in flags else "west" if "W" in flags else None
     if parked:
         motion_state = "parked"
@@ -45,6 +46,7 @@ def decode_gu(value: str) -> dict[str, object]:
         "slewing": slewing,
         "not_slewing": not slewing,
         "at_home": at_home,
+        "guiding": guiding,
         "pier_side": pier_side,
         "motion_state": motion_state,
     }

@@ -34,6 +34,8 @@ Copy [config.indi.example.toml](config.indi.example.toml) to an application-
 owned location and review the observer, meridian, and focuser limits. The
 example deliberately keeps `home_motion_enabled=false` and a conservative
 focuser software ceiling of 50000, even though INDI reports `FOCUS_MAX=100000`.
+The wheel also includes the same template as the package resource
+`onstep_adapter/config.indi.example.toml`.
 
 ## Use
 
@@ -86,6 +88,10 @@ The adapter uses the standard INDI `TELESCOPE_TIMED_GUIDE_WE` and
 `TELESCOPE_TIMED_GUIDE_NS` properties. North, south, east and west are
 supported, including their one-letter aliases. Pulses are limited to 20-5000
 ms and internally chunked to recheck fresh safety state during longer calls.
+An immediate INDI `Ok` means that the driver accepted a pulse; it is not
+physical completion evidence. Every chunk is paced for its requested duration
+and must end with a newer OnStep status in which the compact `:GU#` `G` flag
+has cleared before another chunk is sent or success is returned.
 Tracking must already be active; PARK, HOME, slew, fault, firmware limit and
 the inclusive operational hard stop are refused. A flip recommendation is
 reported as a warning but does not suppress a still-safe guide pulse.

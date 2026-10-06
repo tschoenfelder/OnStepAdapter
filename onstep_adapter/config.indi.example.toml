@@ -1,0 +1,25 @@
+# Copy to ~/.config/onstep_adapter/config.toml on the Raspberry, then review.
+[indi]
+host = "127.0.0.1"
+port = 7624
+device = "LX200 OnStep"
+safe_meridian_flip_via_home = true
+home_motion_enabled = false
+# "strict" requires this client's accepted time/site and HOME authority.
+# "controller_managed" delegates those authorities but retains live hardware
+# state, fault, limit and inclusive hard-stop enforcement.
+tracking_authority_policy = "strict"
+
+[observer]
+lat = 50.336
+lon = 8.533
+alt_m = 304.0
+
+[meridian]
+flip_request_deg = 1.0
+tracking_stop_deg = 1.75
+flip_allowance_seconds = 120.0
+reserve_seconds = 30.0
+
+[focuser]
+max_position = 50000

@@ -10,6 +10,17 @@ from onstep_adapter.indi_status import IndiMountSnapshot
 from onstep_adapter.indi_transport import IndiProperty
 
 
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
 def snapshot(**changes):
     base = IndiMountSnapshot(
         raw_status="NpET260", motion_state="tracking", pier_side="east",
@@ -81,11 +92,21 @@ class IndiGuidingTests(unittest.TestCase):
         self, transport=None, *, current=None, state=None,
         authority_policy="strict", stop=None,
     ):
+        clock = FakeClock()
+        current_snapshot = current or snapshot()
+        revision = current_snapshot.status_revision
+
+        def observe():
+            nonlocal revision
+            revision += 1
+            return replace(current_snapshot, status_revision=revision)
+
         return IndiGuideController(
             transport or GuideTransport(), "LX200 OnStep",
-            observe=lambda: current or snapshot(),
+            observe=observe,
             meridian_status=lambda: state or meridian(),
             emergency_stop=stop or Mock(), authority_policy=authority_policy,
+            monotonic=clock.monotonic, sleeper=clock.sleep,
         )
 
     def test_all_directions_map_to_standard_indi_guide_properties(self):
@@ -176,6 +197,26 @@ class IndiGuidingTests(unittest.TestCase):
         self.assertTrue(result.pulse_completed)
         self.assertEqual([command[2] for command in transport.commands], [490, 20])
 
+    def test_indi_ok_does_not_finish_until_onstep_clears_guide_flag(self):
+        clock = FakeClock()
+        observations = iter([
+            snapshot(raw_status="NpEW260", guiding=False, status_revision=2),
+            snapshot(raw_status="NpGEW260", guiding=True, status_revision=3),
+            snapshot(raw_status="NpEW260", guiding=False, status_revision=4),
+            snapshot(raw_status="NpEW260", guiding=False, status_revision=5),
+        ])
+        controller = IndiGuideController(
+            GuideTransport(), "LX200 OnStep", observe=lambda: next(observations),
+            meridian_status=lambda: meridian(), emergency_stop=Mock(),
+            monotonic=clock.monotonic, sleeper=clock.sleep,
+        )
+
+        result = controller.pulse("east", 100)
+
+        self.assertTrue(result.pulse_completed)
+        self.assertEqual(result.final_raw_status, "NpEW260")
+        self.assertGreaterEqual(clock.now, 0.15)
+
     def test_invalid_direction_or_duration_never_issues_a_pulse(self):
         transport = GuideTransport()
         controller = self.controller(transport)
@@ -215,6 +256,8 @@ class IndiGuidingTests(unittest.TestCase):
         controller = IndiGuideController(
             transport, "LX200 OnStep", observe=lambda: next(observations),
             meridian_status=lambda: meridian(), emergency_stop=stop,
+            monotonic=FakeClock().monotonic,
+            sleeper=lambda _seconds: None,
         )
         result = controller.pulse("east", 100)
         self.assertFalse(result.pulse_completed)
