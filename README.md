@@ -103,6 +103,12 @@ axis movement while tracking. The compatibility `guide(direction,
 duration_ms)` method returns a boolean; new code should use the structured
 `guide_pulse()` result.
 
+The guide path passed supervised hardware validation on October 6, 2026.
+Reciprocal 3000 ms east/west pulses preserved tracking, cleared the OnStep `G`
+flag and produced equal, opposite drift-corrected FITS displacements matching
+the expected 1x sidereal movement at declination +84.35 degrees. Image-scale
+calibration remains the responsibility of each calling guider.
+
 ## Focuser
 
 When the mount is confirmed parked, the 0.4.0 focuser supports bounded

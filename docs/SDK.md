@@ -134,8 +134,12 @@ reacquisition promptly and perform its normal flip workflow.
 These pulses do not promise a specific angular displacement. The calling
 guider calibrates milliseconds per image displacement and closes the loop
 with another frame. On command failure or lost safe tracking after a pulse,
-the adapter requests emergency stop. This 0.5.0 path has mocked protocol and
-safety coverage; its first physical pulse should remain supervised.
+the adapter requests emergency stop. The 0.5.0 implementation passed a
+supervised Terrans OnStep V4 hardware test on October 6, 2026: reciprocal
+3000 ms east/west pulses completed with tracking preserved and no final `G`
+flag. Drift-corrected FITS measurements were 1.36 and 1.38 pixels in opposite
+directions, matching the 1.33-pixel high-declination prediction. This validates
+the protocol path, not a universal pulse calibration for other optical rigs.
 
 ## RA And DEC Axis-Angle Test
 
