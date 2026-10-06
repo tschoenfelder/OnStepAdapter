@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 - 2026-10-06
+
+- Add bounded tracking-preserving north, south, east and west guide pulses
+  through the standard INDI timed-guide properties.
+- Split longer requests into 500 ms chunks with fresh safety checks between
+  chunks.
+- Treat INDI `Ok` as command acceptance only; pace every chunk for its nominal
+  duration and require a newer OnStep status with the guide-active `G` flag
+  cleared before continuing or returning success.
+- Add strict and controller-managed guide authority behavior, structured pulse
+  results, emergency-stop handling and compatibility `guide()` support.
+- Physically validate reciprocal 3000 ms east/west pulses on the Terrans
+  OnStep V4 while tracking. FITS measurements agreed with the expected
+  high-declination displacement and the final RA returned to its start value.
+
 ## 0.4.1 - 2026-09-29
 
 - Allow direct PARK from any fresh, stationary, non-tracking, fault-free

@@ -3,11 +3,12 @@
 ## Target Architecture: Local INDI
 
 The accepted [INDI architecture decision](INDI_ARCHITECTURE.md) governs the
-0.4.1 wheel. Its public client and packaged modules use INDI only. The
+0.5.0 wheel. Its public client and packaged modules use INDI only. The
 direct-serial 0.3.5 model below is retained as historical requirements, not
-as a fallback available in 0.4.0. HOME-dependent mount motion, astronomical
-goto/tracking, axis jog, guiding and PARK-record writes are outstanding and
-fail closed or are absent from the 0.4.0 public API.
+as a fallback available in 0.5.0. HOME-dependent mount motion, astronomical
+goto, application-controlled flip and PARK-record writes remain outstanding.
+Tracking and bounded INDI timed-guide pulses are available under their
+documented authority gates.
 
 - The adapter shall use the unchanged local INDI OnStep driver exclusively,
   without direct serial or raw-controller fallback.
@@ -62,6 +63,15 @@ fail closed or are absent from the 0.4.0 public API.
   because it lacks local authority. A real `TRACK_ON` transition shall require
   two fresh tracking reports. Accepted but unconfirmed or unsafe activation
   shall request emergency stop.
+- Tracking-preserving astronomical corrections shall use standard INDI
+  `TELESCOPE_TIMED_GUIDE_WE` and `TELESCOPE_TIMED_GUIDE_NS` properties. They
+  shall be bounded, serialized per client, preserve tracking, and re-evaluate
+  fresh status and meridian safety between chunks. PARK, HOME, slew, fault,
+  firmware limit and the inclusive hard stop shall refuse them. Strict and
+  controller-managed authority shall match tracking policy; a flip warning
+  may be surfaced without prematurely blocking a still-safe pulse. Image
+  identity, calibration and reacquisition convergence belong to the calling
+  application. This implements GitHub issue #19.
   Local angular movement shall support every documented issue #14 calibration
   seed (minimum 110 arcseconds), use scaled verification tolerances, and reject
   unsupported smaller requests explicitly without clamping or rounding.

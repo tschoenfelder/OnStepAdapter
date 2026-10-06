@@ -29,6 +29,18 @@ class IndiMount:
     def stop(self):
         return self._client.emergency_stop()
 
+    def guide_pulse(
+        self, direction: str, duration_ms: int, *, command_timeout: float = 3.0
+    ):
+        """Apply one bounded astronomical guide pulse while tracking remains on."""
+        return self._client.guide_pulse(
+            direction, duration_ms, command_timeout=command_timeout
+        )
+
+    def guide(self, direction: str, duration_ms: int) -> bool:
+        """Compatibility wrapper returning whether a guide pulse completed."""
+        return self.guide_pulse(direction, duration_ms).pulse_completed
+
     def meridian_status(self):
         return self._client.meridian_status()
 
