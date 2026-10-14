@@ -3,12 +3,24 @@
 ## Target Architecture: Local INDI
 
 The accepted [INDI architecture decision](INDI_ARCHITECTURE.md) governs the
-0.5.0 wheel. Its public client and packaged modules use INDI only. The
+0.6.0 wheel. Its public client and packaged modules use INDI only. The
 direct-serial 0.3.5 model below is retained as historical requirements, not
-as a fallback available in 0.5.0. HOME-dependent mount motion, astronomical
+as a fallback available in 0.6.0. HOME-dependent mount motion, astronomical
 goto, application-controlled flip and PARK-record writes remain outstanding.
 Tracking and bounded INDI timed-guide pulses are available under their
 documented authority gates.
+
+- A caller may supply direction-specific guide calibration and request a
+  bounded RA or DEC correction in arcseconds while tracking remains active.
+- Angular guide corrections shall map to sky east/west/north/south independent
+  of pier side and execute only through the existing timed-guide safety path.
+- Missing or invalid calibration and calculated pulses outside 20-5000 ms
+  shall be refused before an INDI write. Calibration and post-frame convergence
+  remain calling-application responsibilities.
+- Idempotent persistent switch requests shall accept an existing matching `Ok`
+  state without waiting for an update that the INDI driver may not publish.
+- After UNPARK, an already non-tracking fresh OnStep status shall complete the
+  operation without another TRACK_OFF write or revision wait.
 
 - The adapter shall use the unchanged local INDI OnStep driver exclusively,
   without direct serial or raw-controller fallback.

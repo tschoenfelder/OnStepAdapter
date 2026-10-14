@@ -1,9 +1,9 @@
-# OnStepAdapter 0.5.0 SDK
+# OnStepAdapter 0.6.0 SDK
 
 This release is an in-process INDI client, not a serial-port owner. It uses
 the unchanged `LX200 OnStep` device in the Raspberry's local `indiserver`.
 Python 3.13 or newer is required; there are no runtime Python dependencies.
-Install `onstep_adapter-0.5.0-py3-none-any.whl` with `python3 -m pip install`.
+Install `onstep_adapter-0.6.0-py3-none-any.whl` with `python3 -m pip install`.
 
 ## Connection And Cleanup
 
@@ -21,7 +21,7 @@ with OnStepClient(config=config) as client:
 not using the context manager. `close()`
 stops the client's own meridian supervisor and closes its INDI socket; it
 does not disconnect the shared device, stop the server, or evict other apps.
-No serial or raw LX200 fallback ships in the 0.5.0 wheel.
+No serial or raw LX200 fallback ships in the 0.6.0 wheel.
 
 `SAFE_MERIDIAN_FLIP` defaults to enabled. On connect, the client checks the
 installed driver's switch, enables it if needed, and verifies the readback.
@@ -140,6 +140,41 @@ supervised Terrans OnStep V4 hardware test on October 6, 2026: reciprocal
 flag. Drift-corrected FITS measurements were 1.36 and 1.38 pixels in opposite
 directions, matching the 1.33-pixel high-declination prediction. This validates
 the protocol path, not a universal pulse calibration for other optical rigs.
+
+### Calibrated Angular Guide Corrections
+
+Version 0.6.0 can convert an application-measured correction in arcseconds to
+the same timed-guide operation:
+
+```python
+from onstep_adapter import IndiGuideCalibration, OnStepClient
+
+calibration = IndiGuideCalibration(
+    ra_east_arcsec_per_s=1.48,
+    ra_west_arcsec_per_s=1.51,
+    dec_north_arcsec_per_s=2.03,
+    dec_south_arcsec_per_s=1.96,
+)
+
+with OnStepClient(config=config, guide_calibration=calibration) as client:
+    east = client.mount.guide_correction_ra(+1.5)
+    south = client.mount.guide_correction_dec(-2.0)
+```
+
+Calibration is supplied and owned by the calling application. It can instead
+be passed per call or replaced at runtime with
+`mount.set_guide_calibration()`. Nothing is persisted by the adapter. Positive
+RA maps to east, negative RA to west, positive DEC to north and negative DEC
+to south on either pier side. The selected direction-specific rate converts
+arcseconds to milliseconds; results report both values and embed the complete
+`IndiGuidePulseResult` evidence.
+
+Missing, non-finite or non-positive rates, zero/non-finite corrections and
+calculated durations outside 20-5000 ms are rejected before transmission.
+The existing tracking, HOME/PARK, slew, status, authority, meridian and limit
+checks remain unchanged because correction execution delegates directly to
+`guide_pulse()`. The calling guider must acquire a fresh frame afterward and
+decide whether another correction is necessary.
 
 ## RA And DEC Axis-Angle Test
 

@@ -165,6 +165,8 @@ class IndiHomeRouter:
                 after_revision=revision,
             )
             last_raw = status["raw"]
+            if not status["tracking"]:
+                return IndiUnparkResult(True, "unparked", last_raw, None, None)
             before_off = self.transport.get_property(self.device, "OnStep Status")
             off_revision = before_off.revision if before_off is not None else -1
             # The lx200_OnStep driver can apply TRACK_OFF without publishing a

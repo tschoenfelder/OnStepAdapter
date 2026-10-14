@@ -15,6 +15,44 @@ PROPERTY = (
 
 
 class IndiTransportTests(unittest.TestCase):
+    def test_set_switch_is_idempotent_when_fresh_vector_is_already_target_ok(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        commands = []
+
+        def serve():
+            connection, _ = listener.accept()
+            with connection:
+                commands.append(connection.recv(4096).decode())
+                connection.sendall(
+                    b'<defSwitchVector device="LX200 OnStep" name="TELESCOPE_TRACK_STATE" '
+                    b'perm="rw" state="Ok"><defSwitch name="TRACK_ON">Off</defSwitch>'
+                    b'<defSwitch name="TRACK_OFF">On</defSwitch></defSwitchVector>'
+                )
+                connection.settimeout(0.3)
+                try:
+                    commands.append(connection.recv(4096).decode())
+                except socket.timeout:
+                    pass
+
+        server = threading.Thread(target=serve)
+        server.start()
+        transport = IndiTransport(port=listener.getsockname()[1])
+        try:
+            transport.connect()
+            result = transport.set_switch(
+                "LX200 OnStep", "TELESCOPE_TRACK_STATE", "TRACK_OFF"
+            )
+            self.assertEqual(result.values["TRACK_OFF"], "On")
+            self.assertEqual(result.state, "Ok")
+        finally:
+            transport.close()
+            server.join(timeout=3)
+            listener.close()
+
+        self.assertNotIn("newSwitchVector", "".join(commands))
+
     def test_finite_target_sends_ra_and_dec_atomically(self):
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))

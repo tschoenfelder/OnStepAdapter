@@ -3,7 +3,8 @@ import unittest
 from dataclasses import replace
 from unittest.mock import Mock
 
-from onstep_adapter.indi_guiding import IndiGuideController
+from onstep_adapter.indi_client import OnStepIndiClient
+from onstep_adapter.indi_guiding import IndiGuideCalibration, IndiGuideController
 from onstep_adapter.indi_meridian import IndiMeridianState
 from onstep_adapter.indi_mount import IndiMount
 from onstep_adapter.indi_status import IndiMountSnapshot
@@ -263,6 +264,111 @@ class IndiGuidingTests(unittest.TestCase):
         self.assertFalse(result.pulse_completed)
         self.assertFalse(result.tracking_preserved)
         stop.assert_called_once()
+
+    def test_calibrated_corrections_map_all_sky_directions_on_both_pier_sides(self):
+        calibration = IndiGuideCalibration(
+            ra_east_arcsec_per_s=2.0,
+            ra_west_arcsec_per_s=4.0,
+            dec_north_arcsec_per_s=5.0,
+            dec_south_arcsec_per_s=10.0,
+        )
+        cases = (
+            ("ra", 2.0, "east", "TIMED_GUIDE_E"),
+            ("ra", -4.0, "west", "TIMED_GUIDE_W"),
+            ("dec", 5.0, "north", "TIMED_GUIDE_N"),
+            ("dec", -10.0, "south", "TIMED_GUIDE_S"),
+        )
+        for pier_side in ("east", "west"):
+            for axis, offset, direction, element in cases:
+                with self.subTest(pier_side=pier_side, axis=axis, offset=offset):
+                    transport = GuideTransport()
+                    controller = self.controller(
+                        transport, current=snapshot(pier_side=pier_side)
+                    )
+
+                    result = controller.correction(axis, offset, calibration)
+
+                    self.assertTrue(result.correction_completed)
+                    self.assertTrue(result.tracking_preserved)
+                    self.assertTrue(result.verification_required)
+                    self.assertEqual(result.axis, axis)
+                    self.assertEqual(result.requested_arcsec, offset)
+                    self.assertEqual(result.direction, direction)
+                    self.assertEqual(result.calculated_duration_ms, 1000)
+                    self.assertEqual(transport.commands[0][1:], (element, 500))
+                    self.assertEqual(transport.commands[1][1:], (element, 500))
+
+    def test_calibrated_result_preserves_pulse_warning_and_error_contract(self):
+        calibration = IndiGuideCalibration(ra_east_arcsec_per_s=10.0)
+        transport = GuideTransport()
+        result = self.controller(
+            transport,
+            current=snapshot(parked=True, tracking=False),
+            state=meridian("mechanical_terminal"),
+        ).correction("ra", 1.0, calibration)
+
+        self.assertFalse(result.command_accepted)
+        self.assertFalse(result.correction_completed)
+        self.assertFalse(result.tracking_preserved)
+        self.assertIn("requires fresh unparked tracking state", result.error)
+        self.assertEqual(transport.commands, [])
+
+    def test_invalid_or_unavailable_calibration_sends_no_pulse(self):
+        cases = (
+            ("ra", 1.0, None, "caller-supplied"),
+            ("ra", float("nan"), IndiGuideCalibration(ra_east_arcsec_per_s=1.0), "finite"),
+            ("ra", 0.0, IndiGuideCalibration(ra_east_arcsec_per_s=1.0), "non-zero"),
+            ("ra", 1.0, IndiGuideCalibration(), "missing"),
+            ("ra", 1.0, IndiGuideCalibration(ra_east_arcsec_per_s=0.0), "positive"),
+            ("ra", 1.0, IndiGuideCalibration(ra_east_arcsec_per_s=float("inf")), "finite"),
+            ("ra", 0.001, IndiGuideCalibration(ra_east_arcsec_per_s=100.0), "below resolution"),
+            ("ra", 100.0, IndiGuideCalibration(ra_east_arcsec_per_s=10.0), "too large"),
+        )
+        for axis, offset, calibration, message in cases:
+            with self.subTest(offset=offset, message=message):
+                transport = GuideTransport()
+                with self.assertRaisesRegex(ValueError, message):
+                    self.controller(transport).correction(axis, offset, calibration)
+                self.assertEqual(transport.commands, [])
+
+    def test_mount_angular_guide_facade_delegates_without_using_axis_moves(self):
+        calibration = IndiGuideCalibration(ra_east_arcsec_per_s=2.0)
+        client = Mock()
+        mount = IndiMount(client)
+
+        mount.guide_correction_ra(1.5, calibration=calibration, command_timeout=4.0)
+        mount.guide_correction_dec(-2.5, command_timeout=5.0)
+
+        self.assertEqual(
+            client.guide_correction.call_args_list,
+            [
+                unittest.mock.call(
+                    "ra", 1.5, calibration=calibration, command_timeout=4.0
+                ),
+                unittest.mock.call(
+                    "dec", -2.5, calibration=None, command_timeout=5.0
+                ),
+            ],
+        )
+
+    def test_client_uses_caller_owned_default_and_runtime_calibration(self):
+        transport = GuideTransport()
+        initial = IndiGuideCalibration(ra_east_arcsec_per_s=2.0)
+        updated = IndiGuideCalibration(ra_east_arcsec_per_s=4.0)
+        client = OnStepIndiClient(
+            transport=transport, guide_calibration=initial,
+            auto_supervise=False,
+        )
+        client._guide_controller = self.controller(transport)
+
+        first = client.mount.guide_correction_ra(1.0)
+        self.assertEqual(first.calculated_duration_ms, 500)
+        self.assertIs(client.mount.get_guide_calibration(), initial)
+
+        client.mount.set_guide_calibration(updated)
+        second = client.mount.guide_correction_ra(1.0)
+        self.assertEqual(second.calculated_duration_ms, 250)
+        self.assertIs(client.mount.get_guide_calibration(), updated)
 
 
 if __name__ == "__main__":

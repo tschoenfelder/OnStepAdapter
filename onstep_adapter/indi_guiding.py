@@ -12,6 +12,7 @@ from .indi_meridian import IndiMeridianState
 from .indi_status import IndiMountSnapshot
 from .indi_transport import IndiTransport
 
+GuideAxis = Literal["ra", "dec"]
 GuideDirection = Literal["north", "south", "east", "west"]
 
 MIN_GUIDE_PULSE_MS = 20
@@ -76,6 +77,62 @@ class IndiGuidePulseResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class IndiGuideCalibration:
+    """Caller-owned image calibration for angular guide corrections."""
+
+    ra_east_arcsec_per_s: float | None = None
+    ra_west_arcsec_per_s: float | None = None
+    dec_north_arcsec_per_s: float | None = None
+    dec_south_arcsec_per_s: float | None = None
+
+    def rate_for(self, axis: GuideAxis, direction: GuideDirection) -> float | None:
+        mapping = {
+            ("ra", "east"): self.ra_east_arcsec_per_s,
+            ("ra", "west"): self.ra_west_arcsec_per_s,
+            ("dec", "north"): self.dec_north_arcsec_per_s,
+            ("dec", "south"): self.dec_south_arcsec_per_s,
+        }
+        try:
+            value = mapping[(axis, direction)]
+        except KeyError as exc:
+            raise ValueError(
+                f"Guide direction {direction!r} is invalid for axis {axis!r}"
+            ) from exc
+        return None if value is None else float(value)
+
+
+@dataclass(frozen=True)
+class IndiGuideCorrectionResult:
+    axis: GuideAxis
+    requested_arcsec: float
+    direction: GuideDirection
+    calibration_arcsec_per_s: float
+    calculated_duration_ms: int
+    pulse: IndiGuidePulseResult
+    verification_required: bool = True
+
+    @property
+    def correction_completed(self) -> bool:
+        return self.pulse.pulse_completed
+
+    @property
+    def command_accepted(self) -> bool:
+        return self.pulse.command_accepted
+
+    @property
+    def tracking_preserved(self) -> bool:
+        return self.pulse.tracking_preserved
+
+    @property
+    def warnings(self) -> tuple[str, ...]:
+        return self.pulse.warnings
+
+    @property
+    def error(self) -> str | None:
+        return self.pulse.error
+
+
 class IndiGuideController:
     """Execute self-terminating guide pulses without changing tracking mode."""
 
@@ -113,6 +170,65 @@ class IndiGuideController:
             return _DIRECTION_ALIASES[direction.strip().lower()]  # type: ignore[return-value]
         except (AttributeError, KeyError) as exc:
             raise ValueError("Guide direction must be north, south, east or west") from exc
+
+    @staticmethod
+    def correction_direction(axis: GuideAxis, offset_arcsec: float) -> GuideDirection:
+        if axis == "ra":
+            return "east" if offset_arcsec > 0 else "west"
+        if axis == "dec":
+            return "north" if offset_arcsec > 0 else "south"
+        raise ValueError("Guide correction axis must be 'ra' or 'dec'")
+
+    def correction(
+        self,
+        axis: GuideAxis,
+        offset_arcsec: float,
+        calibration: IndiGuideCalibration | None,
+        *,
+        command_timeout: float = 3.0,
+    ) -> IndiGuideCorrectionResult:
+        if isinstance(offset_arcsec, bool) or not isinstance(offset_arcsec, (int, float)):
+            raise ValueError("Guide correction must be a numeric number of arcseconds")
+        requested = float(offset_arcsec)
+        if not math.isfinite(requested) or requested == 0.0:
+            raise ValueError("Guide correction must be finite and non-zero")
+        if calibration is None:
+            raise ValueError("A caller-supplied guide calibration is required")
+
+        direction = self.correction_direction(axis, requested)
+        rate = calibration.rate_for(axis, direction)
+        if rate is None:
+            raise ValueError(
+                f"Guide calibration is missing for {axis} {direction}"
+            )
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError(
+                f"Guide calibration for {axis} {direction} must be positive and finite"
+            )
+
+        duration_ms = int(round(abs(requested) / rate * 1000.0))
+        if duration_ms < MIN_GUIDE_PULSE_MS:
+            raise ValueError(
+                f"Guide correction is below resolution: calculated {duration_ms} ms, "
+                f"minimum is {MIN_GUIDE_PULSE_MS} ms"
+            )
+        if duration_ms > MAX_GUIDE_PULSE_MS:
+            raise ValueError(
+                f"Guide correction is too large: calculated {duration_ms} ms, "
+                f"maximum is {MAX_GUIDE_PULSE_MS} ms"
+            )
+
+        pulse = self.pulse(
+            direction, duration_ms, command_timeout=command_timeout
+        )
+        return IndiGuideCorrectionResult(
+            axis=axis,
+            requested_arcsec=requested,
+            direction=direction,
+            calibration_arcsec_per_s=rate,
+            calculated_duration_ms=duration_ms,
+            pulse=pulse,
+        )
 
     def _preflight(
         self,

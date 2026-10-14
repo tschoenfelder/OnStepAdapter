@@ -158,6 +158,18 @@ class IndiHomeRouteTests(unittest.TestCase):
             ("TELESCOPE_TRACK_STATE", "TRACK_OFF"),
         ])
 
+    def test_unpark_accepts_fresh_already_nontracking_status_without_echo_timeout(self):
+        transport = FakeTransport([
+            status("nNpET260", 2),
+        ])
+        router = IndiHomeRouter(transport, FakeReader(), "LX200 OnStep")
+
+        result = router.unpark()
+
+        self.assertTrue(result.unparked_confirmed)
+        self.assertEqual(result.final_raw_status, "nNpET260")
+        self.assertEqual(transport.commands, [("TELESCOPE_PARK", "UNPARK")])
+
     def test_park_to_home_needs_two_fresh_stationary_home_updates(self):
         transport = FakeTransport([
             status("NpET260", 2),

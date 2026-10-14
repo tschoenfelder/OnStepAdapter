@@ -9,7 +9,13 @@ from typing import Callable
 from .indi_config import IndiRuntimeConfig
 from .indi_axis_motion import AxisMotionMode, IndiAxisMover, IndiAxisMoveResult
 from .indi_focuser import IndiFocuser
-from .indi_guiding import IndiGuideController, IndiGuidePulseResult
+from .indi_guiding import (
+    GuideAxis,
+    IndiGuideCalibration,
+    IndiGuideController,
+    IndiGuideCorrectionResult,
+    IndiGuidePulseResult,
+)
 from .indi_home import IndiHomeRouteResult, IndiHomeRouter, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState, IndiMeridianSupervisor, classify_meridian
 from .indi_mount import IndiMount
@@ -62,6 +68,7 @@ class OnStepIndiClient:
         transport: IndiTransport | None = None,
         clock: Callable[[], datetime] | None = None,
         auto_supervise: bool = True,
+        guide_calibration: IndiGuideCalibration | None = None,
     ) -> None:
         self.device = config.device if config is not None else device
         self.safe_meridian_flip_via_home = (
@@ -75,6 +82,7 @@ class OnStepIndiClient:
         )
         self._clock = clock or (lambda: datetime.now().astimezone())
         self._auto_supervise = auto_supervise
+        self._guide_calibration = guide_calibration
         self._session_time_site_accepted = False
         self._accepted_time_values: dict[str, str] | None = None
         self._accepted_site_values: dict[str, str] | None = None
@@ -247,6 +255,31 @@ class OnStepIndiClient:
             raise ConnectionError("INDI client is not connected")
         return self._guide_controller.pulse(
             direction, duration_ms, command_timeout=command_timeout
+        )
+
+    def get_guide_calibration(self) -> IndiGuideCalibration | None:
+        return self._guide_calibration
+
+    def set_guide_calibration(
+        self, calibration: IndiGuideCalibration | None,
+    ) -> None:
+        self._guide_calibration = calibration
+
+    def guide_correction(
+        self,
+        axis: GuideAxis,
+        offset_arcsec: float,
+        *,
+        calibration: IndiGuideCalibration | None = None,
+        command_timeout: float = 3.0,
+    ) -> IndiGuideCorrectionResult:
+        if self._guide_controller is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        return self._guide_controller.correction(
+            axis,
+            offset_arcsec,
+            calibration if calibration is not None else self._guide_calibration,
+            command_timeout=command_timeout,
         )
 
     def start_supervision(self) -> None:

@@ -1,8 +1,8 @@
-# OnStepAdapter 0.5.0
+# OnStepAdapter 0.6.0
 
 Python 3.13+ access to an OnStep mount and focuser through an existing local
 INDI server and its unchanged `LX200 OnStep` driver. The package is
-`onstep-adapter`; the import is `onstep_adapter`. Version 0.5.0 does not open
+`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.0 does not open
 the controller's serial port, run a daemon, or disconnect other INDI clients.
 
 This is a deliberately restricted INDI release. It provides shared status,
@@ -19,7 +19,7 @@ Do not install 0.4.0 expecting the direct-serial 0.3.5 API.
 Install the local wheel on the Raspberry (Python 3.13 or newer):
 
 ```bash
-python3 -m pip install ./onstep_adapter-0.5.0-py3-none-any.whl
+python3 -m pip install ./onstep_adapter-0.6.0-py3-none-any.whl
 python3 -c 'import onstep_adapter; print(onstep_adapter.__version__)'
 ```
 
@@ -102,6 +102,32 @@ the decision to start another exposure. It must not substitute terrestrial
 axis movement while tracking. The compatibility `guide(direction,
 duration_ms)` method returns a boolean; new code should use the structured
 `guide_pulse()` result.
+
+Applications that already calibrated image displacement per pulse second can
+request a correction directly in arcseconds:
+
+```python
+from onstep_adapter import IndiGuideCalibration, OnStepClient
+
+calibration = IndiGuideCalibration(
+    ra_east_arcsec_per_s=1.48,
+    ra_west_arcsec_per_s=1.51,
+    dec_north_arcsec_per_s=2.03,
+    dec_south_arcsec_per_s=1.96,
+)
+with OnStepClient(config=config, guide_calibration=calibration) as client:
+    result = client.mount.guide_correction_ra(+1.5)
+    if not result.correction_completed:
+        raise RuntimeError(result.error)
+```
+
+Positive RA means east, negative RA west; positive DEC means north and
+negative DEC south. The mapping does not invert by pier side because INDI
+timed-guide elements name sky directions. The adapter converts with the
+caller-supplied direction-specific rate and then uses the exact same bounded
+`guide_pulse()` path. It refuses calculated durations outside 20-5000 ms.
+The caller must measure a new frame after every correction; the adapter does
+not infer calibration or declare image-space convergence.
 
 The guide path passed supervised hardware validation on October 6, 2026.
 Reciprocal 3000 ms east/west pulses preserved tracking, cleared the OnStep `G`
