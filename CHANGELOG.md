@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0 - 2026-10-14
+
+- Add caller-calibrated RA/DEC corrections in arcseconds while sidereal
+  tracking remains active. Positive RA guides east, negative RA west,
+  positive DEC north and negative DEC south.
+- Route every angular correction through the physically validated 0.5.0 timed
+  guide-pulse path, retaining chunking, fresh safety checks, `G`-flag hardware
+  completion and tracking preservation. Resolves #21.
+- Reject missing/invalid calibration and pulse durations outside 20-5000 ms
+  before any INDI command is sent.
+- Make persistent INDI switch writes idempotent when a current `Ok` vector
+  already reports the requested state.
+- Let `unpark()` complete without an unnecessary `TRACK_OFF` write/status wait
+  when its fresh post-UNPARK OnStep status is already stationary and
+  non-tracking. Resolves #17.
+
 ## 0.5.0 - 2026-10-06
 
 - Add bounded tracking-preserving north, south, east and west guide pulses

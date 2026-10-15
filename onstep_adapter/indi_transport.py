@@ -109,6 +109,8 @@ class IndiTransport:
         before = self.wait_property(device, name, timeout=timeout)
         if before.kind != "Switch" or before.permission == "ro" or element not in before.values:
             raise ValueError(f"{device}.{name}.{element} is not a writable INDI switch")
+        if before.state.lower() == "ok" and before.values.get(element) == "On":
+            return before
         payload = (
             f"<newSwitchVector device={quoteattr(device)} name={quoteattr(name)}>"
             f"<oneSwitch name={quoteattr(element)}>On</oneSwitch>"

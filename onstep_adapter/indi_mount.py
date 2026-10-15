@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .indi_axis_motion import AxisMotionMode
+from .indi_guiding import IndiGuideCalibration
 
 if TYPE_CHECKING:
     from .indi_client import OnStepIndiClient
@@ -40,6 +41,45 @@ class IndiMount:
     def guide(self, direction: str, duration_ms: int) -> bool:
         """Compatibility wrapper returning whether a guide pulse completed."""
         return self.guide_pulse(direction, duration_ms).pulse_completed
+
+    def guide_correction_ra(
+        self,
+        offset_arcsec: float,
+        *,
+        calibration: IndiGuideCalibration | None = None,
+        command_timeout: float = 3.0,
+    ):
+        """Apply a calibrated sky-RA correction while tracking remains on.
+
+        Positive offsets guide east and negative offsets guide west. INDI guide
+        directions are sky directions and therefore do not invert by pier side.
+        """
+        return self._client.guide_correction(
+            "ra", offset_arcsec, calibration=calibration,
+            command_timeout=command_timeout,
+        )
+
+    def guide_correction_dec(
+        self,
+        offset_arcsec: float,
+        *,
+        calibration: IndiGuideCalibration | None = None,
+        command_timeout: float = 3.0,
+    ):
+        """Apply a calibrated sky-DEC correction while tracking remains on.
+
+        Positive offsets guide north and negative offsets guide south.
+        """
+        return self._client.guide_correction(
+            "dec", offset_arcsec, calibration=calibration,
+            command_timeout=command_timeout,
+        )
+
+    def get_guide_calibration(self):
+        return self._client.get_guide_calibration()
+
+    def set_guide_calibration(self, calibration: IndiGuideCalibration | None) -> None:
+        self._client.set_guide_calibration(calibration)
 
     def meridian_status(self):
         return self._client.meridian_status()
