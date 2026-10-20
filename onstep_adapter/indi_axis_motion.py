@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+import logging
 import math
 import threading
 import time
@@ -17,6 +18,7 @@ from .indi_gu import local_sidereal_hours
 Axis = Literal["ra", "dec"]
 MIN_AXIS_MOVE_ARCSEC = 30.0
 MAX_AXIS_MOVE_DEG = 15.0
+LOGGER = logging.getLogger(__name__)
 
 
 class AxisMotionMode(str, Enum):
@@ -48,8 +50,8 @@ class IndiAxisMoveResult:
 class IndiAxisMover:
     """Use a finite target, never an indefinite manual-motion switch.
 
-    Positive RA-axis angle increases HA (westward); positive DEC is northward.
-    Logical coordinates are not independent mechanical encoders.
+    Positive RA-axis angle increases HA (westward). Positive DEC follows the
+    OnStep mechanical jog direction, which decreases the published sky DEC.
     """
 
     def __init__(
@@ -200,11 +202,13 @@ class IndiAxisMover:
         """Return a finite target while keeping the other mount axis fixed.
 
         Positive RA-axis motion increases hour angle, so equatorial RA
-        decreases by the same angle. DEC motion leaves RA and HA unchanged.
+        decreases by the same angle. OnStep's positive physical DEC jog
+        direction decreases the published equatorial DEC coordinate; RA and
+        HA remain unchanged.
         There is deliberately no zenith or pier-side folding here.
         """
         if axis == "dec":
-            return ra_hours, dec_deg + offset_deg, ha_deg
+            return ra_hours, dec_deg - offset_deg, ha_deg
         return (ra_hours - offset_deg / 15.0) % 24.0, dec_deg, ha_deg + offset_deg
 
     def move(
@@ -256,6 +260,13 @@ class IndiAxisMover:
                 lst_hours = (before.ra_hours + initial_ha_deg / 15.0) % 24.0
             target_ra, target_dec, target_ha_deg = self._equatorial_axis_target(
                 before.ra_hours, before.dec_deg, initial_ha_deg, axis, offset_deg
+            )
+            LOGGER.info(
+                "Axis target: axis=%s requested_deg=%+.6f "
+                "start_ra_h=%.9f start_dec_deg=%+.9f start_ha_deg=%+.9f "
+                "target_ra_h=%.9f target_dec_deg=%+.9f target_ha_deg=%+.9f",
+                axis, offset_deg, before.ra_hours, before.dec_deg, initial_ha_deg,
+                target_ra, target_dec, target_ha_deg,
             )
             if not self.min_dec_deg <= target_dec <= self.max_dec_deg:
                 raise RuntimeError("Projected DEC leaves the configured movement bound")
