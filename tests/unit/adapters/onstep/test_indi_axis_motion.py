@@ -204,6 +204,46 @@ class IndiAxisMotionTests(unittest.TestCase):
         self.assertEqual(stops, [])
         sidereal_time.assert_called_once()
 
+    @patch(
+        "onstep_adapter.indi_axis_motion.local_sidereal_hours",
+        return_value=22.780342123440857,
+    )
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_first_dec_plus_15_from_recorded_zenith_snapshot_issues_expected_indi_target(
+        self, unused_sleep, unused_sidereal_time,
+    ):
+        """Regression for the first failed Raspberry move on 2026-10-20."""
+        before = snapshot(
+            ha=None,
+            ra=22.861111111111,
+            dec=48.933055555556,
+            revision=100,
+        )
+        expected_ra = 21.858576955448
+        expected_dec = 61.319514147104
+        target_ha = (
+            (22.780342123440857 - expected_ra + 12.0) % 24.0 - 12.0
+        ) * 15.0
+        samples = [
+            before,
+            snapshot(ha=target_ha, ra=expected_ra, dec=expected_dec,
+                     revision=101, slewing=True),
+            snapshot(ha=target_ha, ra=expected_ra, dec=expected_dec, revision=102),
+            snapshot(ha=target_ha, ra=expected_ra, dec=expected_dec, revision=103),
+            snapshot(ha=target_ha, ra=expected_ra, dec=expected_dec, revision=104),
+        ]
+        mover, fake, stops = self.make_mover(samples)
+
+        result = mover.move("dec", 15.0)
+
+        self.assertEqual(fake.commands[0], ("ON_COORD_SET", "SLEW"))
+        self.assertEqual(fake.commands[1][0], "EQUATORIAL_EOD_COORD")
+        self.assertAlmostEqual(fake.commands[1][1]["RA"], expected_ra, places=10)
+        self.assertAlmostEqual(fake.commands[1][1]["DEC"], expected_dec, places=10)
+        self.assertEqual(fake.commands[2], ("TELESCOPE_TRACK_STATE", "TRACK_OFF"))
+        self.assertEqual(result.measured_deg, 15.0)
+        self.assertEqual(stops, [])
+
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
     def test_target_rejection_triggers_emergency_stop(self, unused_sleep):
         mover, _, stops = self.make_mover([snapshot()], issue_error="target rejected")
