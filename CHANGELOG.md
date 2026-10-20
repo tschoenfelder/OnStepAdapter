@@ -7,6 +7,9 @@
   larger request.
 - Added regression coverage for the inclusive 15-degree boundary and rejection
   above it.
+- Preserve a freshly received property acknowledgement when the INDI peer closes
+  immediately after sending it, while still failing promptly if no newer
+  property was received.
 
 ## 0.6.2 - 2026-10-20
 

@@ -6,3 +6,7 @@ degrees. The configured projected-altitude and DEC target limits introduced in
 
 Requests at exactly 15 degrees are accepted; requests above 15 degrees are
 rejected without mount commands.
+
+Property waiters also consume a fresh acknowledgement that arrived immediately
+before an INDI peer EOF. If no newer property arrived, reader failure continues
+to be reported promptly with its original cause.

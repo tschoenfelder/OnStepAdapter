@@ -98,12 +98,12 @@ class IndiTransport:
         deadline = time.monotonic() + timeout
         with self._condition:
             while True:
-                failure = self._reader_failure_locked()
-                if failure is not None:
-                    raise ConnectionError("INDI reader failed") from failure
                 prop = self._properties.get((device, name))
                 if prop is not None and prop.revision > after_revision:
                     return prop
+                failure = self._reader_failure_locked()
+                if failure is not None:
+                    raise ConnectionError("INDI reader failed") from failure
                 if self._closed:
                     raise ConnectionError("INDI connection closed")
                 remaining = deadline - time.monotonic()
