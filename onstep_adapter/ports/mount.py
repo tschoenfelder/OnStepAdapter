@@ -148,6 +148,10 @@ class MountPort(ABC):
         """Start the controller's native horizontal goto."""
         raise NotImplementedError("horizontal goto is not supported")
 
+    def move_horizontal_deg(self, axis: str, offset_deg: float) -> bool:
+        """Move by a finite angle in the controller's horizontal frame."""
+        raise NotImplementedError("finite horizontal movement is not supported")
+
     def set_motion_calibration(self, calibration: object | None) -> None:
         """Install or clear application-supplied angular motion calibration."""
         raise NotImplementedError("runtime motion calibration is not supported")
