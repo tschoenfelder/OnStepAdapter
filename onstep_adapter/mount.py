@@ -147,6 +147,46 @@ def _format_dec(dec: float) -> str:
     return f"{sign}{d:02d}*{m:02d}:{s:02d}"
 
 
+def _format_altitude(altitude: float) -> str:
+    """Format an OnStep horizontal altitude target."""
+    return _format_dec(altitude).replace(":", "'", 1)
+
+
+def _format_azimuth(azimuth: float) -> str:
+    """Format an OnStep horizontal azimuth target."""
+    azimuth %= 360.0
+    degrees = int(azimuth)
+    remainder = (azimuth - degrees) * 60.0
+    minutes = int(remainder)
+    seconds = int(round((remainder - minutes) * 60.0))
+    if seconds == 60:
+        seconds = 0
+        minutes += 1
+    if minutes == 60:
+        minutes = 0
+        degrees = (degrees + 1) % 360
+    return f"{degrees:03d}*{minutes:02d}'{seconds:02d}"
+
+
+def _fold_horizontal_target(altitude: float, azimuth: float) -> tuple[float, float]:
+    """Fold a continuous altitude path into OnStep's canonical Alt/Az range.
+
+    Continuing through either zenith changes the horizontal representation by
+    180 degrees in azimuth.  Keeping this folding here prevents callers from
+    reintroducing an equatorial/pier-side workaround.
+    """
+    if not math.isfinite(altitude) or not math.isfinite(azimuth):
+        raise ValueError("Alt/Az target must be finite")
+    while altitude > 90.0 or altitude < -90.0:
+        if altitude > 90.0:
+            altitude = 180.0 - altitude
+            azimuth += 180.0
+        else:
+            altitude = -180.0 - altitude
+            azimuth += 180.0
+    return altitude, azimuth % 360.0
+
+
 def _parse_ra(s: str) -> float:
     parts = s.strip().split(":")
     return float(parts[0]) + float(parts[1]) / 60 + float(parts[2]) / 3600
@@ -3590,6 +3630,36 @@ class OnStepMount(MountPort):
         dec = _parse_dec(self._send(":GD#"))
         self._persist_last_state(ra=ra, dec=dec)
         return MountPosition(ra=ra, dec=dec)
+
+    def get_altaz(self) -> tuple[float, float]:
+        """Read the horizontal position reported by OnStep."""
+        altitude = _parse_degrees(self._send(":GA#"))
+        azimuth = _parse_degrees(self._send(":GZ#")) % 360.0
+        return altitude, azimuth
+
+    def goto_altaz(self, altitude: float, azimuth: float) -> bool:
+        """Run OnStep's native horizontal goto (:Sa/:Sz/:MA).
+
+        ``altitude`` may be a continuous path angle outside -90..90.  It is
+        folded across the zenith before being sent to OnStep.  No equatorial
+        target, RA offset or pier-side command is emitted here.
+        """
+        target_alt, target_az = _fold_horizontal_target(altitude, azimuth)
+        altitude_reply = self._send(f":Sa{_format_altitude(target_alt)}#")
+        if altitude_reply != "1":
+            raise RuntimeError(
+                f"horizontal_altitude_target_rejected:{altitude_reply!r}"
+            )
+        azimuth_reply = self._send(f":Sz{_format_azimuth(target_az)}#")
+        if azimuth_reply != "1":
+            raise RuntimeError(
+                f"horizontal_azimuth_target_rejected:{azimuth_reply!r}"
+            )
+        goto_reply = self._send(":MA#")
+        if goto_reply != "0":
+            raise RuntimeError(f"horizontal_goto_rejected:{goto_reply!r}")
+        self._at_mechanical_home = False
+        return True
 
     def sync(self, ra: float, dec: float) -> bool:
         self._check_target_safe("sync", ra, dec)

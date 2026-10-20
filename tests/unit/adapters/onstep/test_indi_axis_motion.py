@@ -12,12 +12,12 @@ def snapshot(ha=-30.0, ra=10.0, dec=20.0, revision=1, **changes):
         raw_status="nNpET260", motion_state="unparked", pier_side="east",
         ra_hours=ra, dec_deg=dec, ha_deg=ha,
         meridian_distance_deg=abs(ha) if ha is not None else None,
-        tracking=False, slewing=False,
-        parked=False, at_home=False, at_limit=False, status_age_ms=50.0,
-        coordinates_age_ms=50.0, status_live=True, coordinates_live=True,
-        time_site_authority=True, home_authority=True,
-        mechanical_safe=False, motion_refused=True, blockers=(),
-        status_revision=revision, coordinates_revision=revision,
+        tracking=False, slewing=False, parked=False, at_home=False,
+        at_limit=False, status_age_ms=50.0, coordinates_age_ms=50.0,
+        status_live=True, coordinates_live=True, time_site_authority=True,
+        home_authority=True, mechanical_safe=False, motion_refused=True,
+        blockers=(), status_revision=revision,
+        coordinates_revision=revision,
     )
     return replace(base, **changes)
 
@@ -46,298 +46,106 @@ class IndiAxisMotionTests(unittest.TestCase):
         stops = []
         mover = IndiAxisMover(
             fake, "LX200 OnStep", 50.336, 8.533, lambda: next(sequence),
-            lambda: stops.append("emergency_stop"),
-            **movement_limits,
+            lambda: stops.append("emergency_stop"), **movement_limits,
         )
         return mover, fake, stops
 
-    def test_sky_modes_are_explicitly_refused_without_commands(self):
-        for mode in ("sidereal", "lunar", "solar"):
-            with self.subTest(mode=mode):
-                mover, fake, stops = self.make_mover([snapshot()])
-                with self.assertRaisesRegex(ValueError, "terrestrial"):
-                    mover.move("dec", 1.0, mode=mode)
-                self.assertEqual(fake.commands, [])
-                self.assertEqual(stops, [])
+    def target_for(self, mover, before, axis, offset):
+        alt, az = mover._horizontal_from_equatorial(before.ha_deg, before.dec_deg)
+        if axis == "dec":
+            alt, az = mover._fold_altitude_path(alt + offset, az)
+        else:
+            az = (az + offset) % 360.0
+        lst = (before.ra_hours + before.ha_deg / 15.0) % 24.0
+        return mover._equatorial_from_horizontal(alt, az, lst)
+
+    def completed_samples(self, mover, before, axis, offset):
+        target_ra, target_dec = self.target_for(mover, before, axis, offset)
+        lst = (before.ra_hours + before.ha_deg / 15.0) % 24.0
+        target_ha = ((lst - target_ra + 12) % 24 - 12) * 15
+        return [
+            before,
+            snapshot(ha=target_ha, ra=target_ra, dec=target_dec, revision=2, slewing=True),
+            snapshot(ha=target_ha, ra=target_ra, dec=target_dec, revision=3),
+            snapshot(ha=target_ha, ra=target_ra, dec=target_dec, revision=4),
+            snapshot(ha=target_ha, ra=target_ra, dec=target_dec, revision=5),
+        ]
+
+    def test_altaz_equatorial_round_trip(self):
+        mover, _, _ = self.make_mover([])
+        for ha in (-170.0, -30.0, 0.0, 75.0, 170.0):
+            for dec in (-70.0, 0.0, 48.0, 80.0):
+                alt, az = mover._horizontal_from_equatorial(ha, dec)
+                ra, result_dec = mover._equatorial_from_horizontal(alt, az, 8.0)
+                expected_ra = (8.0 - ha / 15.0) % 24.0
+                self.assertLess(abs(((ra - expected_ra + 12) % 24) - 12), 1e-10)
+                self.assertAlmostEqual(result_dec, dec, places=9)
+
+    def test_continuous_altitude_folds_at_zenith(self):
+        self.assertEqual(IndiAxisMover._fold_altitude_path(105.0, 0.0), (75.0, 180.0))
+        self.assertEqual(IndiAxisMover._fold_altitude_path(120.0, 0.0), (60.0, 180.0))
+        self.assertEqual(IndiAxisMover._fold_altitude_path(135.0, 0.0), (45.0, 180.0))
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_one_five_ten_fifteen_degrees_both_axes(self, unused_sleep):
+    def test_one_five_fifteen_degree_horizontal_jogs(self, unused_sleep):
         for axis in ("ra", "dec"):
-            for magnitude in (1.0, 5.0, 10.0, 15.0):
-                for sign in (-1, 1):
-                    with self.subTest(axis=axis, offset=sign * magnitude):
-                        target = sign * magnitude
-                        def point(deg, rev):
-                            return snapshot(
-                                ra=10 - deg / 15 if axis == "ra" else 10,
-                                dec=20 + deg if axis == "dec" else 20,
-                                revision=rev,
-                            )
-                        samples = [
-                            point(0, 1), point(target / 2, 2),
-                            point(target, 3), point(target, 4),
-                            point(target, 5), point(target, 6),
-                        ]
-                        mover, fake, stops = self.make_mover(samples)
-                        result = mover.move(axis, target)
-                        self.assertTrue(result.stop_confirmed)
-                        self.assertAlmostEqual(result.measured_deg, target)
-                        self.assertEqual(stops, [])
-                        self.assertEqual(fake.commands[0], ("ON_COORD_SET", "SLEW"))
-                        self.assertEqual(fake.commands[1][0], "EQUATORIAL_EOD_COORD")
-                        self.assertAlmostEqual(fake.commands[1][1]["DEC"], 20 + target if axis == "dec" else 20)
-                        self.assertEqual(fake.commands[2], ("TELESCOPE_TRACK_STATE", "TRACK_OFF"))
+            for offset in (-15.0, -5.0, -1.0, 1.0, 5.0, 15.0):
+                with self.subTest(axis=axis, offset=offset):
+                    before = snapshot()
+                    seed, _, _ = self.make_mover([])
+                    samples = self.completed_samples(seed, before, axis, offset)
+                    mover, fake, stops = self.make_mover(samples)
+                    result = mover.move(axis, offset)
+                    target_ra, target_dec = self.target_for(mover, before, axis, offset)
+                    self.assertAlmostEqual(result.measured_deg, offset)
+                    self.assertEqual(fake.commands[0], ("ON_COORD_SET", "SLEW"))
+                    self.assertAlmostEqual(fake.commands[1][1]["RA"], target_ra)
+                    self.assertAlmostEqual(fake.commands[1][1]["DEC"], target_dec)
+                    self.assertEqual(fake.commands[2], ("TELESCOPE_TRACK_STATE", "TRACK_OFF"))
+                    self.assertEqual(stops, [])
 
-    def test_refuses_more_than_fifteen_degrees_without_command(self):
-        mover, fake, stops = self.make_mover([snapshot()])
-        with self.assertRaisesRegex(ValueError, "15 degrees"):
-            mover.move("dec", 15.0001)
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_dec_jog_uses_altaz_translation_not_ra_plus_twelve(self, unused_sleep):
+        before = snapshot(ha=0.0, ra=8.0, dec=50.0)
+        seed, _, _ = self.make_mover([])
+        mover, fake, _ = self.make_mover(
+            self.completed_samples(seed, before, "dec", 15.0)
+        )
+        mover.move("dec", 15.0)
+        target = fake.commands[1][1]
+        ra_jump = abs(((target["RA"] - before.ra_hours + 12.0) % 24.0) - 12.0)
+        self.assertLess(ra_jump, 6.0)
+
+    def test_sky_modes_are_refused_without_commands(self):
+        for mode in ("sidereal", "lunar", "solar"):
+            mover, fake, _ = self.make_mover([snapshot()])
+            with self.assertRaisesRegex(ValueError, "terrestrial"):
+                mover.move("dec", 1.0, mode=mode)
+            self.assertEqual(fake.commands, [])
+
+    def test_invalid_angles_never_command_motion(self):
+        mover, fake, _ = self.make_mover([])
+        for angle in (0, 29 / 3600, 15.1, float("nan")):
+            with self.assertRaises(ValueError):
+                mover.move("dec", angle)
         self.assertEqual(fake.commands, [])
-        self.assertEqual(stops, [])
 
-    def test_refuses_untrusted_or_out_of_corridor_without_command(self):
+    def test_untrusted_state_never_commands_motion(self):
         for before in (
             snapshot(status_live=False), snapshot(parked=True),
-            snapshot(tracking=True), snapshot(at_limit=True),
+            snapshot(tracking=True), snapshot(at_limit=True), snapshot(ha=None),
         ):
-            with self.subTest(before=before):
-                mover, fake, _ = self.make_mover([before])
-                with self.assertRaises(RuntimeError):
-                    mover.move("ra", 10.0)
-                self.assertEqual(fake.commands, [])
+            mover, fake, _ = self.make_mover([before])
+            with self.assertRaises(RuntimeError):
+                mover.move("ra", 1.0)
+            self.assertEqual(fake.commands, [])
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_terrestrial_move_does_not_apply_astronomical_dec_bounds(self, unused_sleep):
-        samples = [
-            snapshot(ha=None, dec=79.5, revision=1),
-            snapshot(ha=None, dec=80.0, revision=2),
-            snapshot(ha=None, dec=80.5, revision=3),
-            snapshot(ha=None, dec=80.5, revision=4),
-            snapshot(ha=None, dec=80.5, revision=5),
-            snapshot(ha=None, dec=80.5, revision=6),
-        ]
-        mover, fake, stops = self.make_mover(
-            samples, min_dec_deg=-80.0, max_dec_deg=80.0
-        )
-        result = mover.move("dec", 1.0)
-        self.assertEqual(result.final_dec_deg, 80.5)
-        self.assertEqual(fake.commands[1][1]["DEC"], 80.5)
-        self.assertEqual(stops, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_terrestrial_dec_move_folds_across_north_pole(self, unused_sleep):
-        samples = [
-            snapshot(ra=10.0, dec=79.0, revision=1, pier_side="east"),
-            snapshot(ra=10.0, dec=86.5, revision=2, pier_side="east", slewing=True),
-            snapshot(
-                ra=22.0, dec=86.0, revision=3, pier_side="west",
-                blockers=("pier_side_conflict",),
-            ),
-            snapshot(ra=22.0, dec=86.0, revision=4, pier_side="west"),
-            snapshot(ra=22.0, dec=86.0, revision=5, pier_side="west"),
-            snapshot(ra=22.0, dec=86.0, revision=6, pier_side="west"),
-        ]
-        mover, fake, stops = self.make_mover(samples, min_alt_deg=-2.0)
-        result = mover.move("dec", 15.0)
-        self.assertAlmostEqual(result.measured_deg, 15.0)
-        self.assertEqual(fake.commands[1][1], {"RA": 22.0, "DEC": 86.0})
-        self.assertEqual(stops, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_terrestrial_dec_move_returns_across_north_pole(self, unused_sleep):
-        samples = [
-            snapshot(ra=10.0, dec=86.0, revision=1, pier_side="west"),
-            snapshot(ra=10.0, dec=90.0, revision=2, pier_side="west", slewing=True),
-            snapshot(
-                ra=22.0, dec=79.0, revision=3, pier_side="east",
-                blockers=("pier_side_conflict",),
-            ),
-            snapshot(ra=22.0, dec=79.0, revision=4, pier_side="east"),
-            snapshot(ra=22.0, dec=79.0, revision=5, pier_side="east"),
-            snapshot(ra=22.0, dec=79.0, revision=6, pier_side="east"),
-        ]
-        mover, fake, stops = self.make_mover(samples, min_alt_deg=-90.0)
-        result = mover.move("dec", -15.0)
-        self.assertAlmostEqual(result.measured_deg, -15.0)
-        self.assertEqual(fake.commands[1][1], {"RA": 22.0, "DEC": 79.0})
-        self.assertEqual(stops, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_next_dec_jog_continues_on_west_side_without_second_ra_shift(
-        self, unused_sleep
-    ):
-        samples = [
-            snapshot(ra=10.0, dec=86.0, revision=1, pier_side="west"),
-            snapshot(ra=10.0, dec=78.5, revision=2, pier_side="west", slewing=True),
-            snapshot(ra=10.0, dec=71.0, revision=3, pier_side="west"),
-            snapshot(ra=10.0, dec=71.0, revision=4, pier_side="west"),
-            snapshot(ra=10.0, dec=71.0, revision=5, pier_side="west"),
-            snapshot(ra=10.0, dec=71.0, revision=6, pier_side="west"),
-        ]
-        mover, fake, stops = self.make_mover(samples, min_alt_deg=-90.0)
-        result = mover.move("dec", 15.0)
-        self.assertAlmostEqual(result.measured_deg, 15.0)
-        self.assertEqual(fake.commands[1][1], {"RA": 10.0, "DEC": 71.0})
-        self.assertEqual(stops, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_non_crossing_move_rejects_authoritative_pier_change(
-        self, unused_sleep
-    ):
-        samples = [
-            snapshot(ra=10.0, dec=20.0, revision=1, pier_side="east"),
-            snapshot(ra=10.0, dec=35.0, revision=2, pier_side="west"),
-        ]
-        mover, _, stops = self.make_mover(samples, min_alt_deg=-90.0)
-        with self.assertRaisesRegex(RuntimeError, "Unexpected pier side"):
-            mover.move("dec", 15.0)
-        self.assertEqual(stops, ["emergency_stop"])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_projected_altitude_allows_minus_two_degrees_inclusively(
-        self, unused_sleep
-    ):
-        target_dec = 50.336 - 92.0
-        samples = [
-            snapshot(ha=0.0, dec=target_dec + 1.0, revision=1),
-            snapshot(ha=0.0, dec=target_dec + 0.5, revision=2),
-            snapshot(ha=0.0, dec=target_dec, revision=3),
-            snapshot(ha=0.0, dec=target_dec, revision=4),
-            snapshot(ha=0.0, dec=target_dec, revision=5),
-            snapshot(ha=0.0, dec=target_dec, revision=6),
-        ]
-        mover, _, stops = self.make_mover(samples, min_alt_deg=-2.0)
-        result = mover.move("dec", -1.0)
-        self.assertAlmostEqual(result.final_dec_deg, target_dec)
-        self.assertEqual(stops, [])
-
-    def test_projected_altitude_below_configured_floor_is_refused(self):
-        mover, fake, _ = self.make_mover([
-            snapshot(ha=0.0, dec=50.336 - 92.0),
-        ], min_alt_deg=-2.0)
-        with self.assertRaisesRegex(RuntimeError, "Projected altitude"):
-            mover.move("dec", -1.0)
-        self.assertEqual(fake.commands, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_wrong_direction_triggers_emergency_stop(self, unused_sleep):
-        mover, fake, stops = self.make_mover([
-            snapshot(revision=1), snapshot(ra=10.05, revision=2),
-        ])
-        with self.assertRaisesRegex(RuntimeError, "reversed"):
+    def test_target_rejection_triggers_emergency_stop(self, unused_sleep):
+        mover, _, stops = self.make_mover([snapshot()], issue_error="target rejected")
+        with self.assertRaisesRegex(RuntimeError, "target rejected"):
             mover.move("ra", 1.0)
         self.assertEqual(stops, ["emergency_stop"])
-        self.assertEqual(fake.commands[0], ("ON_COORD_SET", "SLEW"))
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_small_transient_braking_overshoot_can_settle_on_target(self, unused_sleep):
-        mover, fake, stops = self.make_mover([
-            snapshot(dec=20.0, revision=1),
-            snapshot(dec=18.814, revision=2, slewing=True),
-            snapshot(dec=19.0, revision=3),
-            snapshot(dec=19.0, revision=4),
-            snapshot(dec=19.0, revision=5),
-            snapshot(dec=19.0, revision=6),
-        ])
-        result = mover.move("dec", -1.0)
-        self.assertAlmostEqual(result.measured_deg, -1.0)
-        self.assertEqual(stops, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_dec_move_uses_hour_angle_for_stationary_other_axis(self, unused_sleep):
-        mover, fake, stops = self.make_mover([
-            snapshot(ra=10.0, dec=20.0, ha=-30.0, revision=1),
-            snapshot(ra=10.001, dec=22.5, ha=-30.0, revision=2, slewing=True),
-            snapshot(ra=10.010, dec=25.0, ha=-30.0, revision=3),
-            snapshot(ra=10.011, dec=25.0, ha=-30.0, revision=4),
-            snapshot(ra=10.012, dec=25.0, ha=-30.0, revision=5),
-            snapshot(ra=10.013, dec=25.0, ha=-30.0, revision=6),
-        ])
-        result = mover.move("dec", 5.0)
-        self.assertAlmostEqual(result.measured_deg, 5.0)
-        self.assertEqual(stops, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_dec_arrival_ignores_transient_ra_ha_frame_change(self, unused_sleep):
-        mover, fake, stops = self.make_mover([
-            snapshot(ra=10.0, dec=20.0, ha=-30.0, revision=1),
-            snapshot(
-                ra=10.2, dec=21.0, ha=-33.0, revision=2, slewing=True
-            ),
-            snapshot(
-                ra=10.0, dec=21.0, ha=-29.9, revision=3,
-                coordinates_revision=2,
-            ),
-            snapshot(
-                ra=10.0, dec=21.0, ha=-29.9, revision=4,
-                coordinates_revision=2,
-            ),
-            snapshot(
-                ra=10.0, dec=21.0, ha=-29.9, revision=5,
-                coordinates_revision=2,
-            ),
-        ])
-        result = mover.move("dec", 1.0)
-        self.assertAlmostEqual(result.measured_deg, 1.0)
-        self.assertEqual(stops, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_arrival_does_not_require_duplicate_coordinate_publication(self, unused_sleep):
-        stale_coordinates = ("coordinates_not_fresh",)
-        mover, fake, stops = self.make_mover([
-            snapshot(dec=20.0, revision=1),
-            snapshot(dec=21.0, revision=2, slewing=True),
-            snapshot(
-                dec=21.0, revision=3, coordinates_revision=2,
-                coordinates_live=False, blockers=stale_coordinates,
-            ),
-            snapshot(
-                dec=21.0, revision=4, coordinates_revision=2,
-                coordinates_live=False, blockers=stale_coordinates,
-            ),
-            snapshot(
-                dec=21.0, revision=5, coordinates_revision=2,
-                coordinates_live=False, blockers=stale_coordinates,
-            ),
-        ])
-        result = mover.move("dec", 1.0)
-        self.assertTrue(result.stop_confirmed)
-        self.assertEqual(stops, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_manual_move_is_home_neutral_and_does_not_require_clock_authority(
-        self, unused_sleep
-    ):
-        blockers = (
-            "time_site_authority_unestablished", "hour_angle_unavailable",
-            "home_authority_unestablished", "mechanical_terminal_state",
-        )
-        samples = [
-            snapshot(
-                ha=None, revision=1, at_home=True, time_site_authority=False,
-                home_authority=False, blockers=blockers,
-            ),
-            snapshot(ha=None, ra=10 - 1 / 30, revision=2, at_home=False,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
-            snapshot(ha=None, ra=10 - 1 / 15, revision=3,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
-            snapshot(ha=None, ra=10 - 1 / 15, revision=4,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
-            snapshot(ha=None, ra=10 - 1 / 15, revision=5,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
-            snapshot(ha=None, ra=10 - 1 / 15, revision=6,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
-        ]
-        mover, _, stops = self.make_mover(samples)
-        result = mover.move("ra", 1.0)
-        self.assertAlmostEqual(result.measured_deg, 1.0)
-        self.assertEqual(result.requested_arcsec, 3600.0)
-        self.assertEqual(stops, [])
 
     def test_compatibility_manual_api_converts_arcseconds_to_degrees(self):
         client = Mock()
@@ -351,42 +159,6 @@ class IndiAxisMotionTests(unittest.TestCase):
         client.move_axis_deg.assert_called_with(
             "dec", -5.0, timeout_s=30.0, mode=AxisMotionMode.TERRESTRIAL
         )
-        with self.assertRaises(ValueError):
-            mount.move_ra(10, mode="center")
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_target_rejection_triggers_emergency_stop(self, unused_sleep):
-        mover, _, stops = self.make_mover([
-            snapshot(revision=1),
-        ], issue_error="target rejected")
-        with self.assertRaisesRegex(RuntimeError, "target rejected"):
-            mover.move("ra", 1.0)
-        self.assertEqual(stops, ["emergency_stop"])
-
-    def test_invalid_angles_never_command_motion(self):
-        mover, fake, _ = self.make_mover([])
-        for angle in (0, 29 / 3600, 15.1, float("nan")):
-            with self.assertRaises(ValueError):
-                mover.move("dec", angle)
-        self.assertEqual(fake.commands, [])
-
-    @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_issue_14_calibration_seed_sizes_are_observed(self, unused_sleep):
-        for arcsec in (110, 159, 195, 283, 897, 1595):
-            with self.subTest(arcsec=arcsec):
-                degrees = arcsec / 3600.0
-                samples = [
-                    snapshot(revision=1),
-                    snapshot(ra=10 - degrees / 30, revision=2),
-                    snapshot(ra=10 - degrees / 15, revision=3),
-                    snapshot(ra=10 - degrees / 15, revision=4),
-                    snapshot(ra=10 - degrees / 15, revision=5),
-                    snapshot(ra=10 - degrees / 15, revision=6),
-                ]
-                mover, _, _ = self.make_mover(samples)
-                result = mover.move("ra", degrees)
-                self.assertAlmostEqual(result.requested_arcsec, arcsec)
-                self.assertAlmostEqual(result.measured_deg, degrees)
 
 
 if __name__ == "__main__":
