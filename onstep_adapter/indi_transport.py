@@ -42,11 +42,20 @@ class IndiTransport:
     @property
     def is_open(self) -> bool:
         with self._condition:
-            return not self._closed and self._failure is None
+            return (
+                not self._closed
+                and self._socket is not None
+                and self._reader_failure_locked() is None
+            )
 
     def connect(self, *, timeout: float = 3.0) -> None:
         with self._condition:
             if not self._closed:
+                failure = self._reader_failure_locked()
+                if failure is not None:
+                    raise ConnectionError(
+                        "INDI reader failed; close the transport before reconnecting"
+                    ) from failure
                 return
             self._socket = socket.create_connection((self.host, self.port), timeout=timeout)
             self._socket.settimeout(0.5)
@@ -70,6 +79,9 @@ class IndiTransport:
             connection.close()
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=2.0)
+        with self._condition:
+            if self._reader is reader:
+                self._reader = None
 
     def get_property(self, device: str, name: str) -> IndiProperty | None:
         with self._condition:
@@ -86,11 +98,12 @@ class IndiTransport:
         deadline = time.monotonic() + timeout
         with self._condition:
             while True:
+                failure = self._reader_failure_locked()
+                if failure is not None:
+                    raise ConnectionError("INDI reader failed") from failure
                 prop = self._properties.get((device, name))
                 if prop is not None and prop.revision > after_revision:
                     return prop
-                if self._failure is not None:
-                    raise ConnectionError("INDI reader failed") from self._failure
                 if self._closed:
                     raise ConnectionError("INDI connection closed")
                 remaining = deadline - time.monotonic()
@@ -289,13 +302,27 @@ class IndiTransport:
                 connection = self._socket
                 if self._closed or connection is None:
                     raise ConnectionError("INDI connection closed")
+                failure = self._reader_failure_locked()
+                if failure is not None:
+                    raise ConnectionError("INDI reader failed") from failure
             connection.sendall(xml.encode("utf-8"))
+
+    def _reader_failure_locked(self) -> BaseException | None:
+        """Return reader failure, detecting silent thread termination as failure."""
+        if self._failure is not None:
+            return self._failure
+        reader = self._reader
+        if not self._closed and (reader is None or not reader.is_alive()):
+            self._failure = RuntimeError("INDI reader thread stopped unexpectedly")
+            self._condition.notify_all()
+        return self._failure
 
     def _read_loop(self) -> None:
         parser = ET.XMLPullParser(["start", "end"])
         parser.feed("<stream>")
         decoder = codecs.getincrementaldecoder("utf-8")()
         root: ET.Element | None = None
+        failure: BaseException | None = None
         try:
             while True:
                 with self._condition:
@@ -318,10 +345,14 @@ class IndiTransport:
                         self._record(node)
                         if root is not None:
                             root.remove(node)
-        except (OSError, ET.ParseError, UnicodeError) as exc:
+        except BaseException as exc:
+            failure = exc
+        finally:
             with self._condition:
                 if not self._closed:
-                    self._failure = exc
+                    self._failure = failure or RuntimeError(
+                        "INDI reader thread stopped unexpectedly"
+                    )
                     self._condition.notify_all()
 
     def _record(self, node: ET.Element) -> None:
