@@ -24,7 +24,7 @@ OnStepClient = OnStepIndiClient
 OnStepMount = IndiMount
 OnStepFocuser = IndiFocuser
 
-__version__ = "0.6.9"
+__version__ = "0.6.10"
 
 __all__ = [
     "IndiFocuserMoveResult",

@@ -51,13 +51,10 @@ class IndiAxisMotionTests(unittest.TestCase):
         return mover, fake, stops
 
     def target_for(self, mover, before, axis, offset):
-        alt, az = mover._horizontal_from_equatorial(before.ha_deg, before.dec_deg)
-        if axis == "dec":
-            alt, az = mover._fold_altitude_path(alt + offset, az)
-        else:
-            az = (az + offset) % 360.0
-        lst = (before.ra_hours + before.ha_deg / 15.0) % 24.0
-        return mover._equatorial_from_horizontal(alt, az, lst)
+        ra, dec, _ = mover._equatorial_axis_target(
+            before.ra_hours, before.dec_deg, before.ha_deg, axis, offset
+        )
+        return ra, dec
 
     def completed_samples(self, mover, before, axis, offset):
         target_ra, target_dec = self.target_for(mover, before, axis, offset)
@@ -127,7 +124,7 @@ class IndiAxisMotionTests(unittest.TestCase):
         self.assertEqual(IndiAxisMover._fold_altitude_path(135.0, 0.0), (45.0, 180.0))
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_one_five_fifteen_degree_horizontal_jogs(self, unused_sleep):
+    def test_one_five_fifteen_degree_equatorial_axis_jogs(self, unused_sleep):
         for axis in ("ra", "dec"):
             for offset in (-15.0, -5.0, -1.0, 1.0, 5.0, 15.0):
                 with self.subTest(axis=axis, offset=offset):
@@ -145,7 +142,7 @@ class IndiAxisMotionTests(unittest.TestCase):
                     self.assertEqual(stops, [])
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_dec_jog_uses_altaz_translation_not_ra_plus_twelve(self, unused_sleep):
+    def test_dec_jog_preserves_ra_and_changes_only_dec(self, unused_sleep):
         before = snapshot(ha=0.0, ra=8.0, dec=50.0)
         seed, _, _ = self.make_mover([])
         mover, fake, _ = self.make_mover(
@@ -153,8 +150,57 @@ class IndiAxisMotionTests(unittest.TestCase):
         )
         mover.move("dec", 15.0)
         target = fake.commands[1][1]
-        ra_jump = abs(((target["RA"] - before.ra_hours + 12.0) % 24.0) - 12.0)
-        self.assertLess(ra_jump, 6.0)
+        self.assertEqual(target["RA"], before.ra_hours)
+        self.assertEqual(target["DEC"], before.dec_deg + 15.0)
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_ra_jog_preserves_dec_and_changes_hour_angle_by_requested_angle(
+        self, unused_sleep,
+    ):
+        before = snapshot(ha=-1.0, ra=22.0, dec=48.0)
+        seed, _, _ = self.make_mover([])
+        mover, fake, _ = self.make_mover(
+            self.completed_samples(seed, before, "ra", 15.0)
+        )
+        mover.move("ra", 15.0)
+        target = fake.commands[1][1]
+        self.assertEqual(target["DEC"], before.dec_deg)
+        self.assertEqual(target["RA"], 21.0)
+
+    def test_axis_target_invariants_over_dense_coordinate_grid(self):
+        mover, _, _ = self.make_mover([])
+        for ra in (0.0, 0.01, 1.0, 11.99, 12.0, 22.861111111111, 23.99):
+            for dec in (-79.0, -50.0, 0.0, 48.933055555556, 79.0):
+                for ha in (-179.0, -90.0, -1.211534815052, 0.0, 90.0, 179.0):
+                    for offset in (-15.0, -5.0, -1.0, 1.0, 5.0, 15.0):
+                        with self.subTest(ra=ra, dec=dec, ha=ha, offset=offset):
+                            target_ra, target_dec, target_ha = (
+                                mover._equatorial_axis_target(
+                                    ra, dec, ha, "dec", offset
+                                )
+                            )
+                            self.assertEqual(target_ra, ra)
+                            self.assertEqual(target_dec, dec + offset)
+                            self.assertEqual(target_ha, ha)
+
+                            target_ra, target_dec, target_ha = (
+                                mover._equatorial_axis_target(
+                                    ra, dec, ha, "ra", offset
+                                )
+                            )
+                            self.assertAlmostEqual(
+                                target_ra, (ra - offset / 15.0) % 24.0,
+                                places=12,
+                            )
+                            self.assertEqual(target_dec, dec)
+                            self.assertEqual(target_ha, ha + offset)
+
+    def test_ra_axis_target_wraps_at_zero_and_twenty_four_hours(self):
+        mover, _, _ = self.make_mover([])
+        positive = mover._equatorial_axis_target(0.25, 20.0, 0.0, "ra", 15.0)
+        negative = mover._equatorial_axis_target(23.75, 20.0, 0.0, "ra", -15.0)
+        self.assertEqual(positive, (23.25, 20.0, 15.0))
+        self.assertEqual(negative, (0.75, 20.0, -15.0))
 
     def test_sky_modes_are_refused_without_commands(self):
         for mode in ("sidereal", "lunar", "solar"):
@@ -169,6 +215,44 @@ class IndiAxisMotionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 mover.move("dec", angle)
         self.assertEqual(fake.commands, [])
+
+    def test_dec_limit_rejection_happens_before_any_indi_write(self):
+        for dec, offset in ((79.0, 5.0), (-79.0, -5.0)):
+            with self.subTest(dec=dec, offset=offset):
+                mover, fake, stops = self.make_mover([snapshot(dec=dec)])
+                with self.assertRaisesRegex(RuntimeError, "DEC leaves"):
+                    mover.move("dec", offset)
+                self.assertEqual(fake.commands, [])
+                self.assertEqual(stops, [])
+
+    def test_altitude_limit_rejection_happens_before_any_indi_write(self):
+        mover, fake, stops = self.make_mover([
+            snapshot(ha=180.0, ra=0.0, dec=0.0),
+        ])
+        with self.assertRaisesRegex(RuntimeError, "altitude leaves"):
+            mover.move("ra", 1.0)
+        self.assertEqual(fake.commands, [])
+        self.assertEqual(stops, [])
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_near_zenith_dec_move_does_not_cross_meridian_or_change_ra(
+        self, unused_sleep,
+    ):
+        before = snapshot(ha=-1.211534815052, ra=22.861111111111,
+                          dec=48.933055555556)
+        seed, _, _ = self.make_mover([])
+        mover, fake, _ = self.make_mover(
+            self.completed_samples(seed, before, "dec", 15.0)
+        )
+
+        mover.move("dec", 15.0)
+
+        target = fake.commands[1][1]
+        self.assertEqual(target["RA"], before.ra_hours)
+        self.assertAlmostEqual(target["DEC"], 63.933055555556, places=10)
+        lst = (before.ra_hours + before.ha_deg / 15.0) % 24.0
+        target_ha = ((lst - target["RA"] + 12.0) % 24.0 - 12.0) * 15.0
+        self.assertAlmostEqual(target_ha, before.ha_deg, places=10)
 
     def test_untrusted_state_never_commands_motion(self):
         for before in (
@@ -219,8 +303,8 @@ class IndiAxisMotionTests(unittest.TestCase):
             dec=48.933055555556,
             revision=100,
         )
-        expected_ra = 21.858576955448
-        expected_dec = 61.319514147104
+        expected_ra = 22.861111111111
+        expected_dec = 63.933055555556
         target_ha = (
             (22.780342123440857 - expected_ra + 12.0) % 24.0 - 12.0
         ) * 15.0

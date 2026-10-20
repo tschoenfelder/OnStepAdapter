@@ -189,6 +189,24 @@ class IndiAxisMover:
         )
         return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
 
+    @staticmethod
+    def _equatorial_axis_target(
+        ra_hours: float,
+        dec_deg: float,
+        ha_deg: float,
+        axis: Axis,
+        offset_deg: float,
+    ) -> tuple[float, float, float]:
+        """Return a finite target while keeping the other mount axis fixed.
+
+        Positive RA-axis motion increases hour angle, so equatorial RA
+        decreases by the same angle. DEC motion leaves RA and HA unchanged.
+        There is deliberately no zenith or pier-side folding here.
+        """
+        if axis == "dec":
+            return ra_hours, dec_deg + offset_deg, ha_deg
+        return (ra_hours - offset_deg / 15.0) % 24.0, dec_deg, ha_deg + offset_deg
+
     def move(
         self, axis: Axis, offset_deg: float, *, timeout_s: float = 30.0,
         poll_s: float = 0.1,
@@ -236,24 +254,18 @@ class IndiAxisMover:
             else:
                 initial_ha_deg = before.ha_deg
                 lst_hours = (before.ra_hours + initial_ha_deg / 15.0) % 24.0
-            initial_alt, initial_az = self._horizontal_from_equatorial(
-                initial_ha_deg, before.dec_deg
+            target_ra, target_dec, target_ha_deg = self._equatorial_axis_target(
+                before.ra_hours, before.dec_deg, initial_ha_deg, axis, offset_deg
             )
-            target_alt = initial_alt
-            target_az = initial_az
-            if axis == "dec":
-                target_alt, target_az = self._fold_altitude_path(
-                    initial_alt + offset_deg, initial_az
-                )
-            else:
-                target_az = (initial_az + offset_deg) % 360.0
+            if not self.min_dec_deg <= target_dec <= self.max_dec_deg:
+                raise RuntimeError("Projected DEC leaves the configured movement bound")
+            target_alt, _ = self._horizontal_from_equatorial(
+                target_ha_deg, target_dec
+            )
             if target_alt < self.min_alt_deg - 1e-9:
                 raise RuntimeError(
                     "Projected altitude leaves the local movement bound"
                 )
-            target_ra, target_dec = self._equatorial_from_horizontal(
-                target_alt, target_az, lst_hours
-            )
             arrival_tolerance = min(
                 0.05, max(10.0 / 3600.0, abs(offset_deg) * 0.10)
             )
