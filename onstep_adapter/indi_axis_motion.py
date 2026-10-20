@@ -119,6 +119,31 @@ class IndiAxisMover:
     def _angle_delta(initial_deg: float, current_deg: float) -> float:
         return (current_deg - initial_deg + 180.0) % 360.0 - 180.0
 
+    @staticmethod
+    def _fold_equatorial_target(
+        ra_hours: float, unwrapped_dec_deg: float,
+    ) -> tuple[float, float, Literal[-1, 0, 1]]:
+        """Represent a continuous Axis-2 target as legal sky coordinates."""
+        if unwrapped_dec_deg > 90.0:
+            return (ra_hours + 12.0) % 24.0, 180.0 - unwrapped_dec_deg, 1
+        if unwrapped_dec_deg < -90.0:
+            return (ra_hours + 12.0) % 24.0, -180.0 - unwrapped_dec_deg, -1
+        return ra_hours % 24.0, unwrapped_dec_deg, 0
+
+    @staticmethod
+    def _dec_axis_delta(
+        initial_ra: float, initial_dec: float, current_ra: float,
+        current_dec: float, pole_crossing: Literal[-1, 0, 1],
+    ) -> float:
+        if pole_crossing == 0:
+            return current_dec - initial_dec
+        ra_change = abs((current_ra - initial_ra + 12.0) % 24.0 - 12.0)
+        if ra_change <= 6.0:
+            return current_dec - initial_dec
+        if pole_crossing > 0:
+            return (180.0 - current_dec) - initial_dec
+        return (-180.0 - current_dec) - initial_dec
+
     def _projected_altitude(self, ha_deg: float, dec_deg: float) -> float:
         latitude = math.radians(self.observer_lat_deg)
         hour_angle = math.radians(ha_deg)
@@ -162,16 +187,19 @@ class IndiAxisMover:
             before = self.observe()
             self._check(before)
             assert before.ra_hours is not None and before.dec_deg is not None
-            target_dec = before.dec_deg + (offset_deg if axis == "dec" else 0.0)
-            target_ra = (
-                before.ra_hours - offset_deg / 15.0
-                if axis == "ra" else before.ra_hours
-            ) % 24.0
-            if not self.min_dec_deg <= target_dec <= self.max_dec_deg:
-                raise RuntimeError("Projected DEC leaves the local movement bound")
+            unwrapped_target_dec = (
+                before.dec_deg + offset_deg if axis == "dec" else before.dec_deg
+            )
+            target_ra, target_dec, pole_crossing = self._fold_equatorial_target(
+                before.ra_hours, unwrapped_target_dec
+            )
+            if axis == "ra":
+                target_ra = (before.ra_hours - offset_deg / 15.0) % 24.0
             if before.ha_deg is not None:
                 target_ha = before.ha_deg + (offset_deg if axis == "ra" else 0.0)
-                target_alt = self._projected_altitude(target_ha, target_dec)
+                target_alt = self._projected_altitude(
+                    target_ha, unwrapped_target_dec
+                )
                 if target_alt < self.min_alt_deg - 1e-9:
                     raise RuntimeError(
                         "Projected altitude leaves the local movement bound"
@@ -206,7 +234,9 @@ class IndiAxisMover:
                     latest, moving=True,
                     require_fresh_coordinates=not target_coordinates_seen,
                 )
-                if latest.pier_side != before.pier_side:
+                if latest.pier_side != before.pier_side and not (
+                    axis == "dec" and pole_crossing
+                ):
                     raise RuntimeError("Pier side changed during axis move")
                 if target_coordinates_seen:
                     if not latest.slewing:
@@ -219,7 +249,10 @@ class IndiAxisMover:
                 assert latest.ra_hours is not None and latest.dec_deg is not None
                 delta = (
                     self._ra_axis_delta(before.ra_hours, latest.ra_hours) if axis == "ra"
-                    else latest.dec_deg - before.dec_deg
+                    else self._dec_axis_delta(
+                        before.ra_hours, before.dec_deg,
+                        latest.ra_hours, latest.dec_deg, pole_crossing,
+                    )
                 )
                 signed = delta * (1 if offset_deg > 0 else -1)
                 if signed < -arrival_tolerance or signed > abs(offset_deg) + overrun_tolerance:
@@ -254,7 +287,9 @@ class IndiAxisMover:
                 self._check(
                     sample, moving=True, require_fresh_coordinates=False
                 )
-                if sample.pier_side != before.pier_side:
+                if sample.pier_side != before.pier_side and not (
+                    axis == "dec" and pole_crossing
+                ):
                     raise RuntimeError("Pier side changed after axis move")
                 if sample.status_revision <= last_revision:
                     continue
@@ -264,7 +299,10 @@ class IndiAxisMover:
             assert latest.ra_hours is not None and latest.dec_deg is not None
             measured = (
                 self._ra_axis_delta(before.ra_hours, latest.ra_hours) if axis == "ra"
-                else latest.dec_deg - before.dec_deg
+                else self._dec_axis_delta(
+                    before.ra_hours, before.dec_deg,
+                    latest.ra_hours, latest.dec_deg, pole_crossing,
+                )
             )
             if abs(measured - offset_deg) > arrival_tolerance:
                 raise RuntimeError("Axis move ended outside its scaled verification tolerance")

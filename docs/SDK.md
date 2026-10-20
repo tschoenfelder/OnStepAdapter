@@ -1,9 +1,9 @@
-# OnStepAdapter 0.6.3 SDK
+# OnStepAdapter 0.6.4 SDK
 
 This release is an in-process INDI client, not a serial-port owner. It uses
 the unchanged `LX200 OnStep` device in the Raspberry's local `indiserver`.
 Python 3.13 or newer is required; there are no runtime Python dependencies.
-Install `onstep_adapter-0.6.3-py3-none-any.whl` with `python3 -m pip install`.
+Install `onstep_adapter-0.6.4-py3-none-any.whl` with `python3 -m pip install`.
 
 ## Connection And Cleanup
 
@@ -21,7 +21,7 @@ with OnStepClient(config=config) as client:
 not using the context manager. `close()`
 stops the client's own meridian supervisor and closes its INDI socket; it
 does not disconnect the shared device, stop the server, or evict other apps.
-No serial or raw LX200 fallback ships in the 0.6.3 wheel.
+No serial or raw LX200 fallback ships in the 0.6.4 wheel.
 
 The transport treats the background INDI reader as part of connection health.
 Any unexpected exception or return marks the session failed, wakes property

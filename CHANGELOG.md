@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.4 - 2026-10-20
+
+- Treat terrestrial DEC jogs as continuous mechanical Axis-2 motion.
+- Fold targets through the celestial poles into legal RA/DEC coordinates.
+- Apply the altitude floor, rather than astronomical DEC bounds, to terrestrial jogs.
+
 ## 0.6.3 - 2026-10-20
 
 - Raised the maximum finite RA/DEC axis jog from 10 to 15 degrees.

@@ -1,8 +1,8 @@
-# OnStepAdapter 0.6.3
+# OnStepAdapter 0.6.4
 
 Python 3.13+ access to an OnStep mount and focuser through an existing local
 INDI server and its unchanged `LX200 OnStep` driver. The package is
-`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.3 does not open
+`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.4 does not open
 the controller's serial port, run a daemon, or disconnect other INDI clients.
 
 This is a deliberately restricted INDI release. It provides shared status,
@@ -19,7 +19,7 @@ Do not install 0.4.0 expecting the direct-serial 0.3.5 API.
 Install the local wheel on the Raspberry (Python 3.13 or newer):
 
 ```bash
-python3 -m pip install ./onstep_adapter-0.6.3-py3-none-any.whl
+python3 -m pip install ./onstep_adapter-0.6.4-py3-none-any.whl
 python3 -c 'import onstep_adapter; print(onstep_adapter.__version__)'
 ```
 
