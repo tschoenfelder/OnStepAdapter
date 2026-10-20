@@ -130,12 +130,12 @@ class IndiAxisMotionTests(unittest.TestCase):
             snapshot(ra=10.0, dec=79.0, revision=1, pier_side="east"),
             snapshot(ra=10.0, dec=86.5, revision=2, pier_side="east", slewing=True),
             snapshot(
-                ra=22.0, dec=86.0, revision=3, pier_side="east",
+                ra=22.0, dec=86.0, revision=3, pier_side="west",
                 blockers=("pier_side_conflict",),
             ),
-            snapshot(ra=22.0, dec=86.0, revision=4, pier_side="east"),
-            snapshot(ra=22.0, dec=86.0, revision=5, pier_side="east"),
-            snapshot(ra=22.0, dec=86.0, revision=6, pier_side="east"),
+            snapshot(ra=22.0, dec=86.0, revision=4, pier_side="west"),
+            snapshot(ra=22.0, dec=86.0, revision=5, pier_side="west"),
+            snapshot(ra=22.0, dec=86.0, revision=6, pier_side="west"),
         ]
         mover, fake, stops = self.make_mover(samples, min_alt_deg=-2.0)
         result = mover.move("dec", 15.0)
@@ -144,37 +144,52 @@ class IndiAxisMotionTests(unittest.TestCase):
         self.assertEqual(stops, [])
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_terrestrial_dec_move_folds_across_south_pole(self, unused_sleep):
+    def test_terrestrial_dec_move_returns_across_north_pole(self, unused_sleep):
         samples = [
-            snapshot(ra=10.0, dec=-79.0, revision=1, pier_side="west"),
-            snapshot(ra=10.0, dec=-86.5, revision=2, pier_side="west", slewing=True),
+            snapshot(ra=10.0, dec=86.0, revision=1, pier_side="west"),
+            snapshot(ra=10.0, dec=90.0, revision=2, pier_side="west", slewing=True),
             snapshot(
-                ra=22.0, dec=-86.0, revision=3, pier_side="west",
+                ra=22.0, dec=79.0, revision=3, pier_side="east",
                 blockers=("pier_side_conflict",),
             ),
-            snapshot(ra=22.0, dec=-86.0, revision=4, pier_side="west"),
-            snapshot(ra=22.0, dec=-86.0, revision=5, pier_side="west"),
-            snapshot(ra=22.0, dec=-86.0, revision=6, pier_side="west"),
+            snapshot(ra=22.0, dec=79.0, revision=4, pier_side="east"),
+            snapshot(ra=22.0, dec=79.0, revision=5, pier_side="east"),
+            snapshot(ra=22.0, dec=79.0, revision=6, pier_side="east"),
         ]
         mover, fake, stops = self.make_mover(samples, min_alt_deg=-90.0)
         result = mover.move("dec", -15.0)
         self.assertAlmostEqual(result.measured_deg, -15.0)
-        self.assertEqual(fake.commands[1][1], {"RA": 22.0, "DEC": -86.0})
+        self.assertEqual(fake.commands[1][1], {"RA": 22.0, "DEC": 79.0})
         self.assertEqual(stops, [])
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_coordinate_fold_still_rejects_authoritative_pier_change(
+    def test_next_dec_jog_continues_on_west_side_without_second_ra_shift(
         self, unused_sleep
     ):
         samples = [
-            snapshot(ra=10.0, dec=79.0, revision=1, pier_side="east"),
-            snapshot(
-                ra=22.0, dec=86.0, revision=2, pier_side="west",
-                blockers=("pier_side_conflict",),
-            ),
+            snapshot(ra=10.0, dec=86.0, revision=1, pier_side="west"),
+            snapshot(ra=10.0, dec=78.5, revision=2, pier_side="west", slewing=True),
+            snapshot(ra=10.0, dec=71.0, revision=3, pier_side="west"),
+            snapshot(ra=10.0, dec=71.0, revision=4, pier_side="west"),
+            snapshot(ra=10.0, dec=71.0, revision=5, pier_side="west"),
+            snapshot(ra=10.0, dec=71.0, revision=6, pier_side="west"),
+        ]
+        mover, fake, stops = self.make_mover(samples, min_alt_deg=-90.0)
+        result = mover.move("dec", 15.0)
+        self.assertAlmostEqual(result.measured_deg, 15.0)
+        self.assertEqual(fake.commands[1][1], {"RA": 10.0, "DEC": 71.0})
+        self.assertEqual(stops, [])
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_non_crossing_move_rejects_authoritative_pier_change(
+        self, unused_sleep
+    ):
+        samples = [
+            snapshot(ra=10.0, dec=20.0, revision=1, pier_side="east"),
+            snapshot(ra=10.0, dec=35.0, revision=2, pier_side="west"),
         ]
         mover, _, stops = self.make_mover(samples, min_alt_deg=-90.0)
-        with self.assertRaisesRegex(RuntimeError, "Pier side changed"):
+        with self.assertRaisesRegex(RuntimeError, "Unexpected pier side"):
             mover.move("dec", 15.0)
         self.assertEqual(stops, ["emergency_stop"])
 

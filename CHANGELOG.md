@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.6 - 2026-10-20
+
+- Track terrestrial DEC jogs through the north celestial pole with a continuous
+  Axis-2 coordinate derived from DEC and OnStep's authoritative pier side.
+- Shift RA by 12 hours exactly once when the coordinate representation changes.
+- Continue subsequent west-side Axis-2 jogs without repeating that RA shift.
+
 ## 0.6.5 - 2026-10-20
 
 - Tolerate only the transient secondary INDI pier-side conflict produced by a
