@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.5 - 2026-10-20
+
+- Tolerate only the transient secondary INDI pier-side conflict produced by a
+  terrestrial DEC coordinate fold.
+- Continue to require the authoritative OnStep `:GU#` pier side to remain
+  unchanged throughout the move and require both sources to agree at rest.
+
 ## 0.6.4 - 2026-10-20
 
 - Treat terrestrial DEC jogs as continuous mechanical Axis-2 motion.

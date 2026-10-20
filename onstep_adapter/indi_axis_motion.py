@@ -81,6 +81,7 @@ class IndiAxisMover:
     def _check(
         snapshot: IndiMountSnapshot, *, moving: bool = False,
         require_fresh_coordinates: bool = True,
+        allow_transient_secondary_pier_conflict: bool = False,
     ) -> None:
         forbidden = {
             "indi_device_disconnected", "onstep_status_not_fresh",
@@ -90,6 +91,8 @@ class IndiAxisMover:
         }
         if require_fresh_coordinates:
             forbidden.update({"coordinates_not_fresh", "coordinates_invalid"})
+        if allow_transient_secondary_pier_conflict:
+            forbidden.discard("pier_side_conflict")
         blockers = forbidden.intersection(snapshot.blockers)
         if (
             blockers or not snapshot.status_live or
@@ -233,10 +236,11 @@ class IndiAxisMover:
                 self._check(
                     latest, moving=True,
                     require_fresh_coordinates=not target_coordinates_seen,
+                    allow_transient_secondary_pier_conflict=bool(
+                        axis == "dec" and pole_crossing
+                    ),
                 )
-                if latest.pier_side != before.pier_side and not (
-                    axis == "dec" and pole_crossing
-                ):
+                if latest.pier_side != before.pier_side:
                     raise RuntimeError("Pier side changed during axis move")
                 if target_coordinates_seen:
                     if not latest.slewing:
@@ -287,9 +291,7 @@ class IndiAxisMover:
                 self._check(
                     sample, moving=True, require_fresh_coordinates=False
                 )
-                if sample.pier_side != before.pier_side and not (
-                    axis == "dec" and pole_crossing
-                ):
+                if sample.pier_side != before.pier_side:
                     raise RuntimeError("Pier side changed after axis move")
                 if sample.status_revision <= last_revision:
                     continue

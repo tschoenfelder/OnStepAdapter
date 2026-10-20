@@ -3,9 +3,9 @@
 ## Target Architecture: Local INDI
 
 The accepted [INDI architecture decision](INDI_ARCHITECTURE.md) governs the
-0.6.4 wheel. Its public client and packaged modules use INDI only. The
+0.6.5 wheel. Its public client and packaged modules use INDI only. The
 direct-serial 0.3.5 model below is retained as historical requirements, not
-as a fallback available in 0.6.4. HOME-dependent mount motion, astronomical
+as a fallback available in 0.6.5. HOME-dependent mount motion, astronomical
 goto, application-controlled flip and PARK-record writes remain outstanding.
 Tracking and bounded INDI timed-guide pulses are available under their
 documented authority gates.
