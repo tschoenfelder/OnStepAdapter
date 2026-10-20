@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 import math
 import threading
@@ -11,6 +12,7 @@ from typing import Callable, Literal
 
 from .indi_status import IndiMountSnapshot
 from .indi_transport import IndiTransport
+from .indi_gu import local_sidereal_hours
 
 Axis = Literal["ra", "dec"]
 MIN_AXIS_MOVE_ARCSEC = 30.0
@@ -220,10 +222,22 @@ class IndiAxisMover:
             before = self.observe()
             self._check(before)
             assert before.ra_hours is not None and before.dec_deg is not None
+            # Some INDI sessions do not publish a trusted HA even though their
+            # equatorial coordinates are fresh.  HA is derived data: calculate
+            # it from the Raspberry UTC clock, configured longitude and RA
+            # instead of refusing an otherwise valid first move.
             if before.ha_deg is None:
-                raise RuntimeError("Horizontal jog requires a current hour angle")
+                lst_hours = local_sidereal_hours(
+                    self.observer_lon_deg, datetime.now(timezone.utc)
+                )
+                initial_ha_deg = (
+                    (lst_hours - before.ra_hours + 12.0) % 24.0 - 12.0
+                ) * 15.0
+            else:
+                initial_ha_deg = before.ha_deg
+                lst_hours = (before.ra_hours + initial_ha_deg / 15.0) % 24.0
             initial_alt, initial_az = self._horizontal_from_equatorial(
-                before.ha_deg, before.dec_deg
+                initial_ha_deg, before.dec_deg
             )
             target_alt = initial_alt
             target_az = initial_az
@@ -237,7 +251,6 @@ class IndiAxisMover:
                 raise RuntimeError(
                     "Projected altitude leaves the local movement bound"
                 )
-            lst_hours = (before.ra_hours + before.ha_deg / 15.0) % 24.0
             target_ra, target_dec = self._equatorial_from_horizontal(
                 target_alt, target_az, lst_hours
             )

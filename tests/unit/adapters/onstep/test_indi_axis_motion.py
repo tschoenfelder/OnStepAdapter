@@ -81,6 +81,46 @@ class IndiAxisMotionTests(unittest.TestCase):
                 self.assertLess(abs(((ra - expected_ra + 12) % 24) - 12), 1e-10)
                 self.assertAlmostEqual(result_dec, dec, places=9)
 
+    def test_equatorial_to_altaz_matches_independent_cardinal_references(self):
+        mover, _, _ = self.make_mover([])
+        latitude = 50.336
+        references = (
+            # HA, DEC, expected ALT, expected AZ.  These are analytic
+            # horizon/meridian identities, not values produced by the inverse.
+            (0.0, latitude, 90.0, None),
+            (0.0, latitude - 90.0, 0.0, 180.0),
+            (180.0, 90.0 - latitude, 0.0, 0.0),
+            (-90.0, 0.0, 0.0, 90.0),
+            (90.0, 0.0, 0.0, 270.0),
+        )
+        for ha, dec, expected_alt, expected_az in references:
+            with self.subTest(ha=ha, dec=dec):
+                alt, az = mover._horizontal_from_equatorial(ha, dec)
+                self.assertAlmostEqual(alt, expected_alt, delta=2e-6)
+                if expected_az is not None:  # Azimuth is undefined at zenith.
+                    az_error = (az - expected_az + 180.0) % 360.0 - 180.0
+                    self.assertAlmostEqual(az_error, 0.0, delta=2e-6)
+
+    def test_altaz_to_equatorial_matches_independent_cardinal_references(self):
+        mover, _, _ = self.make_mover([])
+        latitude = 50.336
+        lst = 8.0
+        references = (
+            # ALT, AZ, expected RA, expected DEC.
+            (90.0, 0.0, lst, latitude),
+            (0.0, 180.0, lst, latitude - 90.0),
+            (0.0, 0.0, (lst - 12.0) % 24.0, 90.0 - latitude),
+            (0.0, 90.0, (lst + 6.0) % 24.0, 0.0),
+            (0.0, 270.0, (lst - 6.0) % 24.0, 0.0),
+        )
+        for alt, az, expected_ra, expected_dec in references:
+            with self.subTest(alt=alt, az=az):
+                ra, dec = mover._equatorial_from_horizontal(alt, az, lst)
+                self.assertLess(
+                    abs(((ra - expected_ra + 12.0) % 24.0) - 12.0), 1e-10
+                )
+                self.assertAlmostEqual(dec, expected_dec, places=9)
+
     def test_continuous_altitude_folds_at_zenith(self):
         self.assertEqual(IndiAxisMover._fold_altitude_path(105.0, 0.0), (75.0, 180.0))
         self.assertEqual(IndiAxisMover._fold_altitude_path(120.0, 0.0), (60.0, 180.0))
@@ -133,12 +173,36 @@ class IndiAxisMotionTests(unittest.TestCase):
     def test_untrusted_state_never_commands_motion(self):
         for before in (
             snapshot(status_live=False), snapshot(parked=True),
-            snapshot(tracking=True), snapshot(at_limit=True), snapshot(ha=None),
+            snapshot(tracking=True), snapshot(at_limit=True),
         ):
             mover, fake, _ = self.make_mover([before])
             with self.assertRaises(RuntimeError):
                 mover.move("ra", 1.0)
             self.assertEqual(fake.commands, [])
+
+    @patch("onstep_adapter.indi_axis_motion.local_sidereal_hours", return_value=8.0)
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_missing_indi_hour_angle_is_derived_from_utc_and_longitude(
+        self, unused_sleep, sidereal_time,
+    ):
+        before = snapshot(ha=None, ra=10.0, dec=20.0)
+        derived = replace(before, ha_deg=-30.0, meridian_distance_deg=30.0)
+        seed, _, _ = self.make_mover([])
+        samples = self.completed_samples(seed, derived, "dec", 1.0)
+        samples[0] = before
+        mover, fake, stops = self.make_mover(samples)
+
+        result = mover.move("dec", 1.0)
+
+        expected_ra, expected_dec = self.target_for(mover, derived, "dec", 1.0)
+        self.assertEqual(result.measured_deg, 1.0)
+        self.assertEqual(fake.commands[0], ("ON_COORD_SET", "SLEW"))
+        self.assertEqual(fake.commands[1][0], "EQUATORIAL_EOD_COORD")
+        self.assertAlmostEqual(fake.commands[1][1]["RA"], expected_ra, places=10)
+        self.assertAlmostEqual(fake.commands[1][1]["DEC"], expected_dec, places=10)
+        self.assertNotAlmostEqual(fake.commands[1][1]["RA"], before.ra_hours + 12.0)
+        self.assertEqual(stops, [])
+        sidereal_time.assert_called_once()
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
     def test_target_rejection_triggers_emergency_stop(self, unused_sleep):
