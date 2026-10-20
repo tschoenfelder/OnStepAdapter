@@ -38,43 +38,6 @@ def test_native_altaz_goto_emits_only_sa_sz_ma() -> None:
     assert mount._at_mechanical_home is False
 
 
-@pytest.mark.parametrize("axis", ["alt", "az"])
-@pytest.mark.parametrize("offset", [-15.0, -5.0, -1.0, 1.0, 5.0, 15.0])
-def test_finite_horizontal_move_uses_only_native_altaz_commands(
-    axis: str, offset: float,
-) -> None:
-    mount, sender = _mount_with_replies("+80*00", "350*00", "1", "1", "0")
-
-    assert mount.move_horizontal_deg(axis, offset) is True
-
-    commands = [call.args[0] for call in sender.call_args_list]
-    assert commands[:2] == [":GA#", ":GZ#"]
-    assert commands[-1] == ":MA#"
-    assert not any(command.startswith((":Sr", ":Sd")) for command in commands)
-    assert ":MS#" not in commands
-    expected_alt = 80.0 + offset if axis == "alt" else 80.0
-    expected_az = 350.0 if axis == "alt" else (350.0 + offset) % 360.0
-    expected_alt, expected_az = _fold_horizontal_target(expected_alt, expected_az)
-    assert commands[2:4] == [
-        f":Sa{_format_altitude(expected_alt)}#",
-        f":Sz{_format_azimuth(expected_az)}#",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("axis", "offset"),
-    [("ra", 1.0), ("dec", 1.0), ("alt", 0.0), ("az", 15.01),
-     ("alt", float("nan")), ("az", float("inf"))],
-)
-def test_invalid_horizontal_move_never_touches_transport(
-    axis: str, offset: float,
-) -> None:
-    mount, sender = _mount_with_replies()
-    with pytest.raises(ValueError):
-        mount.move_horizontal_deg(axis, offset)
-    sender.assert_not_called()
-
-
 @pytest.mark.parametrize(
     ("replies", "message"),
     [

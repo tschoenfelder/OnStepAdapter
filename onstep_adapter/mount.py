@@ -3661,24 +3661,6 @@ class OnStepMount(MountPort):
         self._at_mechanical_home = False
         return True
 
-    def move_horizontal_deg(self, axis: str, offset_deg: float) -> bool:
-        """Execute one bounded native OnStep Alt/Az move.
-
-        This deliberately does not translate the target to equatorial
-        coordinates.  OnStep receives its horizontal target directly and the
-        firmware owns the finite stop at that target.
-        """
-        if axis not in {"alt", "az"}:
-            raise ValueError("horizontal axis must be 'alt' or 'az'")
-        if not math.isfinite(offset_deg) or not 0 < abs(offset_deg) <= 15.0:
-            raise ValueError("horizontal move must be finite and within 15 degrees")
-        altitude, azimuth = self.get_altaz()
-        if axis == "alt":
-            altitude += offset_deg
-        else:
-            azimuth = (azimuth + offset_deg) % 360.0
-        return self.goto_altaz(altitude, azimuth)
-
     def sync(self, ra: float, dec: float) -> bool:
         self._check_target_safe("sync", ra, dec)
         self._send(f":Sr{_format_ra(ra)}#")
