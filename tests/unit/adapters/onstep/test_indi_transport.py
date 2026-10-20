@@ -1,5 +1,6 @@
 import socket
 import threading
+import time
 import unittest
 
 from onstep_adapter.indi_transport import IndiTransport
@@ -15,6 +16,100 @@ PROPERTY = (
 
 
 class IndiTransportTests(unittest.TestCase):
+    def test_unexpected_reader_exception_marks_transport_failed_and_wakes_waiter(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+
+        class FailingTransport(IndiTransport):
+            def _record(self, node):
+                raise RuntimeError("unexpected reader failure")
+
+        def serve():
+            connection, _ = listener.accept()
+            with connection:
+                connection.recv(4096)
+                connection.sendall(PROPERTY)
+                time.sleep(0.5)
+
+        server = threading.Thread(target=serve)
+        server.start()
+        transport = FailingTransport(port=listener.getsockname()[1])
+        started = time.monotonic()
+        try:
+            transport.connect()
+            with self.assertRaises(ConnectionError) as caught:
+                transport.wait_property(
+                    "LX200 OnStep", "NEVER_ARRIVES", timeout=5.0
+                )
+            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+            self.assertEqual(str(caught.exception.__cause__), "unexpected reader failure")
+            self.assertFalse(transport.is_open)
+            with self.assertRaises(ConnectionError) as send_error:
+                transport._send('<getProperties version="1.7"/>')
+            self.assertIs(send_error.exception.__cause__, caught.exception.__cause__)
+        finally:
+            transport.close()
+            server.join(timeout=3)
+            listener.close()
+
+    def test_reader_failure_can_close_and_reconnect_without_device_disconnect(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(2)
+        commands = []
+
+        class FailOnceTransport(IndiTransport):
+            fail_next_record = True
+
+            def _record(self, node):
+                if self.fail_next_record:
+                    self.fail_next_record = False
+                    raise RuntimeError("first reader failed")
+                super()._record(node)
+
+        def serve():
+            first, _ = listener.accept()
+            with first:
+                commands.append(first.recv(4096).decode())
+                first.sendall(PROPERTY)
+                time.sleep(0.2)
+            second, _ = listener.accept()
+            with second:
+                commands.append(second.recv(4096).decode())
+                second.sendall(PROPERTY)
+                time.sleep(0.2)
+
+        server = threading.Thread(target=serve)
+        server.start()
+        transport = FailOnceTransport(port=listener.getsockname()[1])
+        try:
+            transport.connect()
+            with self.assertRaises(ConnectionError):
+                transport.wait_property(
+                    "LX200 OnStep", "SAFE_MERIDIAN_FLIP", timeout=2.0
+                )
+            self.assertFalse(transport.is_open)
+            with self.assertRaisesRegex(ConnectionError, "close the transport"):
+                transport.connect()
+
+            transport.close()
+            transport.connect()
+            prop = transport.wait_property(
+                "LX200 OnStep", "SAFE_MERIDIAN_FLIP", timeout=2.0
+            )
+            self.assertEqual(prop.values["OFF"], "On")
+            self.assertTrue(transport.is_open)
+        finally:
+            transport.close()
+            server.join(timeout=3)
+            listener.close()
+
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(all("getProperties" in command for command in commands))
+        self.assertFalse(any("DISCONNECT" in command for command in commands))
+
     def test_set_switch_is_idempotent_when_fresh_vector_is_already_target_ok(self):
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))

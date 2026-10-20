@@ -1,8 +1,8 @@
-# OnStepAdapter 0.6.0
+# OnStepAdapter 0.6.1
 
 Python 3.13+ access to an OnStep mount and focuser through an existing local
 INDI server and its unchanged `LX200 OnStep` driver. The package is
-`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.0 does not open
+`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.1 does not open
 the controller's serial port, run a daemon, or disconnect other INDI clients.
 
 This is a deliberately restricted INDI release. It provides shared status,
@@ -19,7 +19,7 @@ Do not install 0.4.0 expecting the direct-serial 0.3.5 API.
 Install the local wheel on the Raspberry (Python 3.13 or newer):
 
 ```bash
-python3 -m pip install ./onstep_adapter-0.6.0-py3-none-any.whl
+python3 -m pip install ./onstep_adapter-0.6.1-py3-none-any.whl
 python3 -c 'import onstep_adapter; print(onstep_adapter.__version__)'
 ```
 
@@ -29,6 +29,12 @@ open that serial device or a raw LX200 socket in parallel. The package does
 not modify or replace the INDI driver. It was checked against the Terrans
 OnStep V4 with the installed `indi_lx200_OnStep` driver, without changing
 OnStep `Config.h`.
+
+The INDI reader is part of each application's client session. If that reader
+terminates, `client.is_open` becomes false and property waits fail immediately
+with the original reader error as their cause. Recover by calling `close()` and
+then `connect()` on the client. Closing this client socket does not send an INDI
+device `DISCONNECT`, so the driver, mount and other INDI clients stay connected.
 
 Copy [config.indi.example.toml](config.indi.example.toml) to an application-
 owned location and review the observer, meridian, and focuser limits. The

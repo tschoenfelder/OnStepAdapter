@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1 - 2026-10-20
+
+- Detect every unexpected INDI reader-thread exception or return and report the
+  transport closed instead of leaving applications on a stale socket.
+- Wake property waiters immediately, preserve the original reader failure as
+  the `ConnectionError` cause, and reject writes on the failed session.
+- Support explicit `close()` plus `connect()` recovery without sending device
+  `CONNECTION.DISCONNECT` or disturbing other INDI clients. Resolves #23.
+
 ## 0.6.0 - 2026-10-14
 
 - Add caller-calibrated RA/DEC corrections in arcseconds while sidereal

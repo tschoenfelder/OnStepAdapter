@@ -1,9 +1,9 @@
-# OnStepAdapter 0.6.0 SDK
+# OnStepAdapter 0.6.1 SDK
 
 This release is an in-process INDI client, not a serial-port owner. It uses
 the unchanged `LX200 OnStep` device in the Raspberry's local `indiserver`.
 Python 3.13 or newer is required; there are no runtime Python dependencies.
-Install `onstep_adapter-0.6.0-py3-none-any.whl` with `python3 -m pip install`.
+Install `onstep_adapter-0.6.1-py3-none-any.whl` with `python3 -m pip install`.
 
 ## Connection And Cleanup
 
@@ -21,7 +21,17 @@ with OnStepClient(config=config) as client:
 not using the context manager. `close()`
 stops the client's own meridian supervisor and closes its INDI socket; it
 does not disconnect the shared device, stop the server, or evict other apps.
-No serial or raw LX200 fallback ships in the 0.6.0 wheel.
+No serial or raw LX200 fallback ships in the 0.6.1 wheel.
+
+The transport treats the background INDI reader as part of connection health.
+Any unexpected exception or return marks the session failed, wakes property
+waiters, makes `is_open` false and rejects further writes. `wait_property()`
+raises `ConnectionError` with the original reader exception as `__cause__` for
+diagnostics. A long-running application should recover with an explicit
+`close()` followed by `connect()`; do not retry commands on the failed session.
+This closes only the application's TCP socket and never sends
+`CONNECTION.DISCONNECT`, so the shared INDI device and other clients remain
+undisturbed.
 
 `SAFE_MERIDIAN_FLIP` defaults to enabled. On connect, the client checks the
 installed driver's switch, enables it if needed, and verifies the readback.
@@ -143,7 +153,7 @@ the protocol path, not a universal pulse calibration for other optical rigs.
 
 ### Calibrated Angular Guide Corrections
 
-Version 0.6.0 can convert an application-measured correction in arcseconds to
+Version 0.6.0 and later can convert an application-measured correction in arcseconds to
 the same timed-guide operation:
 
 ```python

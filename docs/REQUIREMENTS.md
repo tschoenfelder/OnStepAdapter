@@ -3,9 +3,9 @@
 ## Target Architecture: Local INDI
 
 The accepted [INDI architecture decision](INDI_ARCHITECTURE.md) governs the
-0.6.0 wheel. Its public client and packaged modules use INDI only. The
+0.6.1 wheel. Its public client and packaged modules use INDI only. The
 direct-serial 0.3.5 model below is retained as historical requirements, not
-as a fallback available in 0.6.0. HOME-dependent mount motion, astronomical
+as a fallback available in 0.6.1. HOME-dependent mount motion, astronomical
 goto, application-controlled flip and PARK-record writes remain outstanding.
 Tracking and bounded INDI timed-guide pulses are available under their
 documented authority gates.
@@ -21,6 +21,11 @@ documented authority gates.
   state without waiting for an update that the INDI driver may not publish.
 - After UNPARK, an already non-tracking fresh OnStep status shall complete the
   operation without another TRACK_OFF write or revision wait.
+- Unexpected INDI reader termination shall make transport health false, wake
+  property waiters and preserve the original failure as diagnostic cause.
+- A failed reader session shall reject further writes. Recovery shall require
+  closing the client socket before reconnecting and shall never send an INDI
+  device `DISCONNECT` that could disturb other clients.
 
 - The adapter shall use the unchanged local INDI OnStep driver exclusively,
   without direct serial or raw-controller fallback.
