@@ -40,13 +40,14 @@ class FakeTransport:
 
 
 class IndiAxisMotionTests(unittest.TestCase):
-    def make_mover(self, samples, *, issue_error=None):
+    def make_mover(self, samples, *, issue_error=None, **movement_limits):
         fake = FakeTransport(issue_error=issue_error)
         sequence = iter(samples)
         stops = []
         mover = IndiAxisMover(
             fake, "LX200 OnStep", 50.336, 8.533, lambda: next(sequence),
             lambda: stops.append("emergency_stop"),
+            **movement_limits,
         )
         return mover, fake, stops
 
@@ -97,6 +98,56 @@ class IndiAxisMotionTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     mover.move("ra", 10.0)
                 self.assertEqual(fake.commands, [])
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_configured_dec_bounds_are_inclusive_and_enforced(self, unused_sleep):
+        samples = [
+            snapshot(ha=None, dec=79.0, revision=1),
+            snapshot(ha=None, dec=79.5, revision=2),
+            snapshot(ha=None, dec=80.0, revision=3),
+            snapshot(ha=None, dec=80.0, revision=4),
+            snapshot(ha=None, dec=80.0, revision=5),
+            snapshot(ha=None, dec=80.0, revision=6),
+        ]
+        mover, _, stops = self.make_mover(
+            samples, min_dec_deg=-80.0, max_dec_deg=80.0
+        )
+        result = mover.move("dec", 1.0)
+        self.assertEqual(result.final_dec_deg, 80.0)
+        self.assertEqual(stops, [])
+
+        mover, fake, _ = self.make_mover(
+            [snapshot(ha=None, dec=79.5)], min_dec_deg=-80.0, max_dec_deg=80.0
+        )
+        with self.assertRaisesRegex(RuntimeError, "Projected DEC"):
+            mover.move("dec", 1.0)
+        self.assertEqual(fake.commands, [])
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_projected_altitude_allows_minus_two_degrees_inclusively(
+        self, unused_sleep
+    ):
+        target_dec = 50.336 - 92.0
+        samples = [
+            snapshot(ha=0.0, dec=target_dec + 1.0, revision=1),
+            snapshot(ha=0.0, dec=target_dec + 0.5, revision=2),
+            snapshot(ha=0.0, dec=target_dec, revision=3),
+            snapshot(ha=0.0, dec=target_dec, revision=4),
+            snapshot(ha=0.0, dec=target_dec, revision=5),
+            snapshot(ha=0.0, dec=target_dec, revision=6),
+        ]
+        mover, _, stops = self.make_mover(samples, min_alt_deg=-2.0)
+        result = mover.move("dec", -1.0)
+        self.assertAlmostEqual(result.final_dec_deg, target_dec)
+        self.assertEqual(stops, [])
+
+    def test_projected_altitude_below_configured_floor_is_refused(self):
+        mover, fake, _ = self.make_mover([
+            snapshot(ha=0.0, dec=50.336 - 92.0),
+        ], min_alt_deg=-2.0)
+        with self.assertRaisesRegex(RuntimeError, "Projected altitude"):
+            mover.move("dec", -1.0)
+        self.assertEqual(fake.commands, [])
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
     def test_wrong_direction_triggers_emergency_stop(self, unused_sleep):

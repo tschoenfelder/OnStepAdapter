@@ -1,8 +1,8 @@
-# OnStepAdapter 0.6.1
+# OnStepAdapter 0.6.2
 
 Python 3.13+ access to an OnStep mount and focuser through an existing local
 INDI server and its unchanged `LX200 OnStep` driver. The package is
-`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.1 does not open
+`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.2 does not open
 the controller's serial port, run a daemon, or disconnect other INDI clients.
 
 This is a deliberately restricted INDI release. It provides shared status,
@@ -19,7 +19,7 @@ Do not install 0.4.0 expecting the direct-serial 0.3.5 API.
 Install the local wheel on the Raspberry (Python 3.13 or newer):
 
 ```bash
-python3 -m pip install ./onstep_adapter-0.6.1-py3-none-any.whl
+python3 -m pip install ./onstep_adapter-0.6.2-py3-none-any.whl
 python3 -c 'import onstep_adapter; print(onstep_adapter.__version__)'
 ```
 
@@ -187,6 +187,21 @@ but neither HOME nor clock authority. Their 1/5/10-degree mock cases pass;
 the supervised mount test has **not** passed. Requests below 30″ are refused,
 never rounded. PARK-record and application-controlled flip commands from
 0.3.5 have not been ported; no serial fallback is provided.
+
+Finite movement limits are installation settings, not source constants:
+
+```toml
+[movement]
+min_alt_deg = -2.0
+min_dec_deg = -80.0
+max_dec_deg = 80.0
+```
+
+The DEC interval and the `-2 degrees` altitude floor are inclusive. When a
+fresh, authoritative hour angle is available, the adapter projects the target
+altitude before sending the finite target and refuses lower endpoints. A
+HOME-neutral terrestrial move without astronomical time authority retains
+the DEC gate because HOME coordinates are diagnostic rather than sky truth.
 
 The installed driver appears to publish OnStep's `H` HOME flag in raw status,
 but this has not been physically checked through INDI on this rig. Local

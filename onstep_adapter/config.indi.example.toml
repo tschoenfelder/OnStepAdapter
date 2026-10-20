@@ -21,5 +21,10 @@ tracking_stop_deg = 1.75
 flip_allowance_seconds = 120.0
 reserve_seconds = 30.0
 
+[movement]
+min_alt_deg = -2.0
+min_dec_deg = -80.0
+max_dec_deg = 80.0
+
 [focuser]
 max_position = 50000

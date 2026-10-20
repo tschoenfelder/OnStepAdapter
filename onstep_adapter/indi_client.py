@@ -202,6 +202,9 @@ class OnStepIndiClient:
                     self._transport, self.device, self._config.observer_lat,
                     self._config.observer_lon, self.observe_mount,
                     self.emergency_stop,
+                    min_alt_deg=self._config.movement_min_alt_deg,
+                    min_dec_deg=self._config.movement_min_dec_deg,
+                    max_dec_deg=self._config.movement_max_dec_deg,
                 )
                 self._guide_controller = IndiGuideController(
                     self._transport, self.device, observe=self.observe_mount,

@@ -3,9 +3,9 @@
 ## Target Architecture: Local INDI
 
 The accepted [INDI architecture decision](INDI_ARCHITECTURE.md) governs the
-0.6.1 wheel. Its public client and packaged modules use INDI only. The
+0.6.2 wheel. Its public client and packaged modules use INDI only. The
 direct-serial 0.3.5 model below is retained as historical requirements, not
-as a fallback available in 0.6.1. HOME-dependent mount motion, astronomical
+as a fallback available in 0.6.2. HOME-dependent mount motion, astronomical
 goto, application-controlled flip and PARK-record writes remain outstanding.
 Tracking and bounded INDI timed-guide pulses are available under their
 documented authority gates.
@@ -71,6 +71,11 @@ documented authority gates.
   unparked away from HOME when tracking is off, fresh state is available,
   no fault/limit/slew is active, and the bounded endpoint is accepted. It
   shall never force a HOME transition. This implements GitHub issue #12.
+- Finite movement target limits shall be loaded from the installation's
+  `[movement]` configuration. The default inclusive bounds are target altitude
+  `>= -2 degrees` and target DEC `-80..+80 degrees`. Projected altitude shall
+  be enforced before transmission when authoritative HA is available; HOME's
+  diagnostic coordinates shall not be treated as astronomical truth.
 - INDI tracking enable shall default to strict astronomical authority and a
   safe live meridian state. An explicit per-client `controller_managed` policy
   may delegate time/site, HOME, coordinate and meridian authority while still
