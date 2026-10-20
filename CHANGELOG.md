@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2 - 2026-10-20
+
+- Move finite-axis target altitude and declination bounds into the runtime
+  `[movement]` configuration.
+- Permit endpoints down to an inclusive altitude of -2 degrees while retaining
+  inclusive DEC bounds of -80 through +80 degrees by default.
+
 ## 0.6.1 - 2026-10-20
 
 - Detect every unexpected INDI reader-thread exception or return and report the

@@ -24,6 +24,9 @@ class IndiRuntimeConfig:
     focuser_max_position: int | None = None
     home_motion_enabled: bool = False
     tracking_authority_policy: str = "strict"
+    movement_min_alt_deg: float = -2.0
+    movement_min_dec_deg: float = -80.0
+    movement_max_dec_deg: float = 80.0
 
 
 def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
@@ -34,6 +37,7 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         indi = data["indi"]
         observer = data["observer"]
         meridian = data["meridian"]
+        movement = data.get("movement", {})
         result = IndiRuntimeConfig(
             host=str(indi["host"]),
             port=int(indi["port"]),
@@ -54,8 +58,11 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
             tracking_authority_policy=str(
                 indi.get("tracking_authority_policy", "strict")
             ),
+            movement_min_alt_deg=float(movement.get("min_alt_deg", -2.0)),
+            movement_min_dec_deg=float(movement.get("min_dec_deg", -80.0)),
+            movement_max_dec_deg=float(movement.get("max_dec_deg", 80.0)),
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"Invalid INDI configuration: {exc}") from exc
     if not result.host or not result.device or not 1 <= result.port <= 65535:
         raise ValueError("INDI endpoint must have a host, device and valid port")
@@ -75,6 +82,9 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         result.tracking_stop_deg,
         result.flip_allowance_seconds,
         result.reserve_seconds,
+        result.movement_min_alt_deg,
+        result.movement_min_dec_deg,
+        result.movement_max_dec_deg,
     )
     if not all(math.isfinite(value) for value in numeric):
         raise ValueError("INDI configuration numeric values must be finite")
@@ -86,4 +96,13 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         raise ValueError("Flip allowance/reserve is invalid")
     if result.focuser_max_position is not None and result.focuser_max_position <= 0:
         raise ValueError("Configured focuser maximum must be positive")
+    if not -90.0 <= result.movement_min_alt_deg <= 90.0:
+        raise ValueError("Movement minimum altitude must be within -90..90 degrees")
+    if not (
+        -90.0 <= result.movement_min_dec_deg
+        < result.movement_max_dec_deg <= 90.0
+    ):
+        raise ValueError(
+            "Movement DEC limits must satisfy -90 <= min_dec < max_dec <= 90"
+        )
     return result

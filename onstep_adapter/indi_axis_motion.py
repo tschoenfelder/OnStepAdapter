@@ -54,11 +54,25 @@ class IndiAxisMover:
         self, transport: IndiTransport, device: str, observer_lat_deg: float,
         observer_lon_deg: float, observe: Callable[[], IndiMountSnapshot],
         emergency_stop: Callable[[], object],
+        *, min_alt_deg: float = -2.0, min_dec_deg: float = -80.0,
+        max_dec_deg: float = 80.0,
     ) -> None:
+        if not all(math.isfinite(value) for value in (
+            observer_lat_deg, observer_lon_deg, min_alt_deg,
+            min_dec_deg, max_dec_deg,
+        )):
+            raise ValueError("Axis movement configuration must be finite")
+        if not -90.0 <= min_alt_deg <= 90.0:
+            raise ValueError("Axis movement minimum altitude is out of range")
+        if not -90.0 <= min_dec_deg < max_dec_deg <= 90.0:
+            raise ValueError("Axis movement DEC bounds are invalid")
         self.transport = transport
         self.device = device
         self.observer_lat_deg = observer_lat_deg
         self.observer_lon_deg = observer_lon_deg
+        self.min_alt_deg = min_alt_deg
+        self.min_dec_deg = min_dec_deg
+        self.max_dec_deg = max_dec_deg
         self.observe = observe
         self.emergency_stop = emergency_stop
         self._lock = threading.Lock()
@@ -105,6 +119,16 @@ class IndiAxisMover:
     def _angle_delta(initial_deg: float, current_deg: float) -> float:
         return (current_deg - initial_deg + 180.0) % 360.0 - 180.0
 
+    def _projected_altitude(self, ha_deg: float, dec_deg: float) -> float:
+        latitude = math.radians(self.observer_lat_deg)
+        hour_angle = math.radians(ha_deg)
+        declination = math.radians(dec_deg)
+        sin_altitude = (
+            math.sin(latitude) * math.sin(declination)
+            + math.cos(latitude) * math.cos(declination) * math.cos(hour_angle)
+        )
+        return math.degrees(math.asin(max(-1.0, min(1.0, sin_altitude))))
+
     def move(
         self, axis: Axis, offset_deg: float, *, timeout_s: float = 30.0,
         poll_s: float = 0.1,
@@ -143,8 +167,15 @@ class IndiAxisMover:
                 before.ra_hours - offset_deg / 15.0
                 if axis == "ra" else before.ra_hours
             ) % 24.0
-            if not -80.0 <= target_dec <= 80.0:
+            if not self.min_dec_deg <= target_dec <= self.max_dec_deg:
                 raise RuntimeError("Projected DEC leaves the local movement bound")
+            if before.ha_deg is not None:
+                target_ha = before.ha_deg + (offset_deg if axis == "ra" else 0.0)
+                target_alt = self._projected_altitude(target_ha, target_dec)
+                if target_alt < self.min_alt_deg - 1e-9:
+                    raise RuntimeError(
+                        "Projected altitude leaves the local movement bound"
+                    )
             arrival_tolerance = min(
                 0.05, max(10.0 / 3600.0, abs(offset_deg) * 0.10)
             )

@@ -24,6 +24,13 @@ tracking_stop_deg = 1.75
 flip_allowance_seconds = 120.0
 reserve_seconds = 30.0
 
+[movement]
+# Finite RA/DEC jog targets may reach slightly below the geometric horizon
+# under direct user observation, but must remain inside these DEC bounds.
+min_alt_deg = -2.0
+min_dec_deg = -80.0
+max_dec_deg = 80.0
+
 [focuser]
 # INDI currently reports FOCUS_MAX=100000. Keep this lower conservative
 # software ceiling until the physical focuser travel is verified.

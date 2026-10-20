@@ -20,6 +20,9 @@ class IndiConfigTests(unittest.TestCase):
         )
         self.assertEqual(policy.flip_request_deg, 1.0)
         self.assertEqual(policy.hard_stop_deg, 1.75)
+        self.assertEqual(config.movement_min_alt_deg, -2.0)
+        self.assertEqual(config.movement_min_dec_deg, -80.0)
+        self.assertEqual(config.movement_max_dec_deg, 80.0)
 
     def test_configured_stop_above_firmware_guard_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "below both firmware"):
@@ -68,6 +71,24 @@ class IndiConfigTests(unittest.TestCase):
                 encoding="ascii",
             )
             with self.assertRaisesRegex(ValueError, "tracking_authority_policy"):
+                load_indi_config(target)
+
+    def test_movement_limits_are_validated(self):
+        path = Path(__file__).resolve().parents[4] / "config.indi.example.toml"
+        original = path.read_text(encoding="ascii")
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "config.toml"
+            target.write_text(
+                original.replace("min_alt_deg = -2.0", "min_alt_deg = -91.0"),
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(ValueError, "minimum altitude"):
+                load_indi_config(target)
+            target.write_text(
+                original.replace("min_dec_deg = -80.0", "min_dec_deg = 81.0"),
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(ValueError, "DEC limits"):
                 load_indi_config(target)
 
 

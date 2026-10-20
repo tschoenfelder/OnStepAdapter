@@ -1,9 +1,9 @@
-# OnStepAdapter 0.6.1 SDK
+# OnStepAdapter 0.6.2 SDK
 
 This release is an in-process INDI client, not a serial-port owner. It uses
 the unchanged `LX200 OnStep` device in the Raspberry's local `indiserver`.
 Python 3.13 or newer is required; there are no runtime Python dependencies.
-Install `onstep_adapter-0.6.1-py3-none-any.whl` with `python3 -m pip install`.
+Install `onstep_adapter-0.6.2-py3-none-any.whl` with `python3 -m pip install`.
 
 ## Connection And Cleanup
 
@@ -21,7 +21,7 @@ with OnStepClient(config=config) as client:
 not using the context manager. `close()`
 stops the client's own meridian supervisor and closes its INDI socket; it
 does not disconnect the shared device, stop the server, or evict other apps.
-No serial or raw LX200 fallback ships in the 0.6.1 wheel.
+No serial or raw LX200 fallback ships in the 0.6.2 wheel.
 
 The transport treats the background INDI reader as part of connection health.
 Any unexpected exception or return marks the session failed, wakes property
@@ -194,9 +194,15 @@ RA increases hour angle (westward); positive DEC moves northward. Both require
 fresh unparked status, tracking off, no slew/fault/limit, a stable pier side,
 and a request from 30 arcseconds through 10 degrees. HOME and time/site authority are not
 prerequisites for this terrestrial/manual operation. DEC targets are limited
-to -80 through +80 degrees. Each move monitors the path, disables tracking
-after arrival and confirms fresh stationary status. Logical coordinates are
-not independent encoder measurements; visually verify each stage. Compatibility
+by `[movement].min_dec_deg` and `max_dec_deg`; the example uses the inclusive
+range -80 through +80 degrees. `[movement].min_alt_deg` is also inclusive and
+defaults to -2 degrees. When an authoritative HA sample is available, the
+adapter computes the projected target altitude and refuses a lower endpoint
+before sending any INDI command. Without astronomical time authority, a
+HOME-neutral terrestrial move retains the DEC gate but cannot infer altitude
+from HOME's diagnostic coordinates. Each move monitors the path, disables
+tracking after arrival and confirms fresh stationary status. Logical
+coordinates are not independent encoder measurements; visually verify each stage. Compatibility
 aliases `move_ra(offset_arcsec, mode="manual")` and
 `move_dec(offset_arcsec, mode="manual")` accept arcseconds and report both
 `requested_arcsec` and `requested_deg`. The explicit axis methods take degrees.
