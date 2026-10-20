@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.3 - 2026-10-20
+
+- Raised the maximum finite RA/DEC axis jog from 10 to 15 degrees.
+- Kept projected altitude and configured DEC target bounds mandatory for the
+  larger request.
+- Added regression coverage for the inclusive 15-degree boundary and rejection
+  above it.
+
 ## 0.6.2 - 2026-10-20
 
 - Move finite-axis target altitude and declination bounds into the runtime

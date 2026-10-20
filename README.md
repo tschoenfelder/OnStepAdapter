@@ -1,8 +1,8 @@
-# OnStepAdapter 0.6.2
+# OnStepAdapter 0.6.3
 
 Python 3.13+ access to an OnStep mount and focuser through an existing local
 INDI server and its unchanged `LX200 OnStep` driver. The package is
-`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.2 does not open
+`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.3 does not open
 the controller's serial port, run a daemon, or disconnect other INDI clients.
 
 This is a deliberately restricted INDI release. It provides shared status,
@@ -19,7 +19,7 @@ Do not install 0.4.0 expecting the direct-serial 0.3.5 API.
 Install the local wheel on the Raspberry (Python 3.13 or newer):
 
 ```bash
-python3 -m pip install ./onstep_adapter-0.6.2-py3-none-any.whl
+python3 -m pip install ./onstep_adapter-0.6.3-py3-none-any.whl
 python3 -c 'import onstep_adapter; print(onstep_adapter.__version__)'
 ```
 
@@ -181,9 +181,9 @@ merely because its own authority is absent. Finite
 `move_ra_axis_deg()` / `move_dec_axis_deg()` take degrees. The compatibility
 `move_ra(..., mode="manual")` / `move_dec(..., mode="manual")` methods take
 arcseconds. Both use finite INDI targets.
-They support 30 arcseconds through 10 degrees and require fresh unparked,
+They support 30 arcseconds through 15 degrees and require fresh unparked,
 stationary, non-tracking and fault-free state,
-but neither HOME nor clock authority. Their 1/5/10-degree mock cases pass;
+but neither HOME nor clock authority. Their 1/5/10/15-degree mock cases pass;
 the supervised mount test has **not** passed. Requests below 30″ are refused,
 never rounded. PARK-record and application-controlled flip commands from
 0.3.5 have not been ported; no serial fallback is provided.

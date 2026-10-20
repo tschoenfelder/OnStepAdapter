@@ -14,7 +14,7 @@ from .indi_transport import IndiTransport
 
 Axis = Literal["ra", "dec"]
 MIN_AXIS_MOVE_ARCSEC = 30.0
-MAX_AXIS_MOVE_DEG = 10.0
+MAX_AXIS_MOVE_DEG = 15.0
 
 
 class AxisMotionMode(str, Enum):

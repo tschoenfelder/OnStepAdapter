@@ -61,9 +61,9 @@ class IndiAxisMotionTests(unittest.TestCase):
                 self.assertEqual(stops, [])
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
-    def test_one_five_ten_degrees_both_axes(self, unused_sleep):
+    def test_one_five_ten_fifteen_degrees_both_axes(self, unused_sleep):
         for axis in ("ra", "dec"):
-            for magnitude in (1.0, 5.0, 10.0):
+            for magnitude in (1.0, 5.0, 10.0, 15.0):
                 for sign in (-1, 1):
                     with self.subTest(axis=axis, offset=sign * magnitude):
                         target = sign * magnitude
@@ -87,6 +87,13 @@ class IndiAxisMotionTests(unittest.TestCase):
                         self.assertEqual(fake.commands[1][0], "EQUATORIAL_EOD_COORD")
                         self.assertAlmostEqual(fake.commands[1][1]["DEC"], 20 + target if axis == "dec" else 20)
                         self.assertEqual(fake.commands[2], ("TELESCOPE_TRACK_STATE", "TRACK_OFF"))
+
+    def test_refuses_more_than_fifteen_degrees_without_command(self):
+        mover, fake, stops = self.make_mover([snapshot()])
+        with self.assertRaisesRegex(ValueError, "15 degrees"):
+            mover.move("dec", 15.0001)
+        self.assertEqual(fake.commands, [])
+        self.assertEqual(stops, [])
 
     def test_refuses_untrusted_or_out_of_corridor_without_command(self):
         for before in (
@@ -295,7 +302,7 @@ class IndiAxisMotionTests(unittest.TestCase):
 
     def test_invalid_angles_never_command_motion(self):
         mover, fake, _ = self.make_mover([])
-        for angle in (0, 29 / 3600, 10.1, float("nan")):
+        for angle in (0, 29 / 3600, 15.1, float("nan")):
             with self.assertRaises(ValueError):
                 mover.move("dec", angle)
         self.assertEqual(fake.commands, [])

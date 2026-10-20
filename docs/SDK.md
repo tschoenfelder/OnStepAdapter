@@ -1,9 +1,9 @@
-# OnStepAdapter 0.6.2 SDK
+# OnStepAdapter 0.6.3 SDK
 
 This release is an in-process INDI client, not a serial-port owner. It uses
 the unchanged `LX200 OnStep` device in the Raspberry's local `indiserver`.
 Python 3.13 or newer is required; there are no runtime Python dependencies.
-Install `onstep_adapter-0.6.2-py3-none-any.whl` with `python3 -m pip install`.
+Install `onstep_adapter-0.6.3-py3-none-any.whl` with `python3 -m pip install`.
 
 ## Connection And Cleanup
 
@@ -21,7 +21,7 @@ with OnStepClient(config=config) as client:
 not using the context manager. `close()`
 stops the client's own meridian supervisor and closes its INDI socket; it
 does not disconnect the shared device, stop the server, or evict other apps.
-No serial or raw LX200 fallback ships in the 0.6.2 wheel.
+No serial or raw LX200 fallback ships in the 0.6.3 wheel.
 
 The transport treats the background INDI reader as part of connection health.
 Any unexpected exception or return marks the session failed, wakes property
@@ -192,7 +192,7 @@ decide whether another correction is necessary.
 finite INDI coordinate target, not an indefinite manual-motion switch. Positive
 RA increases hour angle (westward); positive DEC moves northward. Both require
 fresh unparked status, tracking off, no slew/fault/limit, a stable pier side,
-and a request from 30 arcseconds through 10 degrees. HOME and time/site authority are not
+and a request from 30 arcseconds through 15 degrees. HOME and time/site authority are not
 prerequisites for this terrestrial/manual operation. DEC targets are limited
 by `[movement].min_dec_deg` and `max_dec_deg`; the example uses the inclusive
 range -80 through +80 degrees. `[movement].min_alt_deg` is also inclusive and
@@ -211,7 +211,7 @@ requests fail clearly and are never rounded up. Issue #14's documented seeds
 of 110″, 159″, 195″, 283″, 897″ and 1595″ are covered by mocked paths.
 
 The runner stages PARK -> UNPARK without moving to HOME, then runs paired
-+1/-1, +5/-5 and +10/-10 degrees on RA, then DEC. Every movement requires
++1/-1, +5/-5, +10/-10 and +15/-15 degrees on RA, then DEC. Every movement requires
 ENTER and physical clearance confirmation. Final HOME -> PARK also requires
 confirmation and is the separate live `H` check. ESC, `f` or Ctrl-C requests
 emergency stop and suppresses later route commands. Add `--sync-time-location`

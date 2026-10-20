@@ -1,4 +1,4 @@
-"""Supervised INDI 1/5/10-degree RA and DEC axis-movement acceptance test."""
+"""Supervised INDI 1/5/10/15-degree RA and DEC axis-movement acceptance test."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def run(config_path: str, *, goto_timeout_s: float, sync_time_location: bool = F
             raise RuntimeError("UNPARK did not leave a stationary, non-tracking state")
         confirm("Confirm the unchanged UNPARK pose is physically clear for paired moves.")
         for axis in ("ra", "dec"):
-            for magnitude in (1.0, 5.0, 10.0):
+            for magnitude in (1.0, 5.0, 10.0, 15.0):
                 for angle in (magnitude, -magnitude):
                     current = wait_live(client)
                     print(
