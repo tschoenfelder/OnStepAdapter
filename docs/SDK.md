@@ -203,7 +203,7 @@ max_step_deg = 10.0
 horizon_margin_deg = 2.0
 brake_lead_deg = 0.5
 stop_hold_seconds = 3.0
-slew_rate_element = "SLEW_MAX"
+slew_rate_element = "9"
 ```
 
 The caller must explicitly execute `park()`, verify `confirmed`, call
@@ -229,6 +229,12 @@ allowance, and does not complete until coordinates are stable for the hold
 period. PARK/HOME/mode changes are blocked while moving or stopping; emergency
 stop remains available. Horizon clipping uses the configured movement floor
 plus margin. No exact high-speed endpoint or encoder accuracy is claimed.
+
+The tested `indi_lx200_OnStep` names its slew-rate elements `0` through `9`,
+not `SLEW_MAX`; `9` is its highest rate. For compatibility with earlier 0.7.0
+example files, a configured `SLEW_MAX` is resolved to the highest numeric
+element actually advertised by the driver. The selected element is returned
+in `IndiTerrestrialMoveResult.slew_rate_element`.
 
 On the tested Terrans installation, `indi_lx200_OnStep` exposes RA/DEC but no
 standard `HORIZONTAL_COORD`. In that case the adapter derives geometric ALT/AZ

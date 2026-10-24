@@ -26,7 +26,7 @@ class IndiConfigTests(unittest.TestCase):
         self.assertTrue(config.mode_state_path.endswith("mode_state.json"))
         self.assertEqual(config.terrestrial_step_deg, 10.0)
         self.assertEqual(config.terrestrial_horizon_margin_deg, 2.0)
-        self.assertEqual(config.terrestrial_slew_rate_element, "SLEW_MAX")
+        self.assertEqual(config.terrestrial_slew_rate_element, "9")
 
     def test_configured_stop_above_firmware_guard_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "below both firmware"):

@@ -29,6 +29,7 @@ class IndiTerrestrialMoveResult:
     final_altitude_deg: float | None
     stop_confirmed: bool
     endpoint_is_estimated: bool = True
+    slew_rate_element: str = ""
 
 
 class IndiTerrestrialController:
@@ -127,9 +128,10 @@ class IndiTerrestrialController:
                 raise RuntimeError("Remaining safe travel is below the braking allowance")
             north = (intent == "toward") == (branch == "near")
             element = "MOTION_NORTH" if north else "MOTION_SOUTH"
+            slew_rate_element = self._resolve_slew_rate_element()
             self.transport.set_switch(
                 self.config.device, "TELESCOPE_SLEW_RATE",
-                self.config.terrestrial_slew_rate_element,
+                slew_rate_element,
             )
             self.transport.issue_switch(self.config.device, "TELESCOPE_MOTION_NS", element)
             motion_started = True
@@ -167,6 +169,7 @@ class IndiTerrestrialController:
                 start_altitude_deg=start.altitude_deg,
                 final_altitude_deg=final.altitude_deg,
                 stop_confirmed=True,
+                slew_rate_element=slew_rate_element,
             )
         except BaseException:
             if motion_started:
@@ -196,6 +199,27 @@ class IndiTerrestrialController:
             "park_state_conflict",
         }.intersection(sample.blockers):
             raise RuntimeError("Fault, limit or conflicting feedback blocks terrestrial motion")
+
+    def _resolve_slew_rate_element(self) -> str:
+        prop = self.transport.get_property(
+            self.config.device, "TELESCOPE_SLEW_RATE"
+        )
+        if prop is None:
+            raise RuntimeError("INDI TELESCOPE_SLEW_RATE is unavailable")
+        configured = self.config.terrestrial_slew_rate_element
+        if configured in prop.values:
+            return configured
+        if configured.upper() == "SLEW_MAX":
+            numeric = sorted(
+                (int(name), name) for name in prop.values if name.isdigit()
+            )
+            if numeric:
+                return numeric[-1][1]
+        available = ", ".join(sorted(prop.values))
+        raise RuntimeError(
+            f"Configured terrestrial slew rate {configured!r} is unavailable; "
+            f"driver offers: {available or 'none'}"
+        )
 
     def _matches_stationary_reference(self, sample) -> bool:
         if self._stationary_reference is None:

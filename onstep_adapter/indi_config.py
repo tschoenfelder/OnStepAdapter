@@ -34,7 +34,7 @@ class IndiRuntimeConfig:
     terrestrial_horizon_margin_deg: float = 2.0
     terrestrial_brake_lead_deg: float = 0.5
     terrestrial_stop_hold_seconds: float = 3.0
-    terrestrial_slew_rate_element: str = "SLEW_MAX"
+    terrestrial_slew_rate_element: str = "9"
 
 
 def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
@@ -87,7 +87,7 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
                 terrestrial.get("stop_hold_seconds", 3.0)
             ),
             terrestrial_slew_rate_element=str(
-                terrestrial.get("slew_rate_element", "SLEW_MAX")
+                terrestrial.get("slew_rate_element", "9")
             ),
         )
     except (AttributeError, KeyError, TypeError, ValueError) as exc:

@@ -46,7 +46,7 @@ horizon_margin_deg = 2.0
 brake_lead_deg = 0.5
 stop_hold_seconds = 3.0
 # Standard INDI maximum slew-rate switch used by the supervised v10.22 path.
-slew_rate_element = "SLEW_MAX"
+slew_rate_element = "9" # highest rate exposed by tested indi_lx200_OnStep
 
 [focuser]
 # INDI currently reports FOCUS_MAX=100000. Keep this lower conservative

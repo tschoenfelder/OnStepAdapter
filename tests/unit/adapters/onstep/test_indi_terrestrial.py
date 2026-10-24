@@ -42,6 +42,10 @@ class Transport:
     def __init__(self):
         self.commands = []
 
+    def get_property(self, device, name):
+        assert name == "TELESCOPE_SLEW_RATE"
+        return SimpleNamespace(values={str(value): "Off" for value in range(10)})
+
     def set_switch(self, device, name, element):
         self.commands.append(("set", name, element))
 
@@ -87,9 +91,10 @@ def test_near_side_toward_horizon_uses_north_and_stops_early(unused_sleep):
     assert result.commanded_deg == 10
     assert result.stop_confirmed and result.endpoint_is_estimated
     assert transport.commands == [
-        ("set", "TELESCOPE_SLEW_RATE", "SLEW_MAX"),
+        ("set", "TELESCOPE_SLEW_RATE", "9"),
         ("issue", "TELESCOPE_MOTION_NS", "MOTION_NORTH"),
     ]
+    assert result.slew_rate_element == "9"
     assert stops == ["stop"]
 
 
@@ -138,7 +143,7 @@ def test_stationary_unpark_anchor_allows_delayed_first_step_preflight():
     with pytest.raises(AssertionError, match="No mocked terrestrial sample remains"):
         mover.move_toward_north_horizon()
     assert transport.commands == [
-        ("set", "TELESCOPE_SLEW_RATE", "SLEW_MAX"),
+        ("set", "TELESCOPE_SLEW_RATE", "9"),
         ("issue", "TELESCOPE_MOTION_NS", "MOTION_NORTH"),
     ]
     assert stops == ["stop"]
@@ -151,6 +156,21 @@ def test_stale_position_different_from_unpark_anchor_refuses():
     with pytest.raises(RuntimeError, match="Fresh"):
         mover.move_toward_north_horizon()
     assert transport.commands == [] and stops == []
+
+
+def test_legacy_slew_max_alias_resolves_to_highest_numeric_driver_rate():
+    legacy = replace(CONFIG, terrestrial_slew_rate_element="SLEW_MAX")
+    mover, transport, stops = controller([
+        sample(), sample(dec=25, alt=35, slewing=True),
+        sample(dec=29.6, alt=30.4, slewing=True),
+        sample(dec=29.7, alt=30.3), sample(dec=29.7, alt=30.3),
+    ], config=legacy)
+
+    result = mover.move_toward_north_horizon()
+
+    assert result.slew_rate_element == "9"
+    assert transport.commands[0] == ("set", "TELESCOPE_SLEW_RATE", "9")
+    assert stops == ["stop"]
 
 
 @pytest.mark.parametrize(
