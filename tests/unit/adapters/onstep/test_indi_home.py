@@ -35,8 +35,14 @@ class FakeTransport:
         self.current = status(initial, 1)
         self.updates = list(updates)
         self.commands = []
+        self.park_property = IndiProperty(
+            "LX200 OnStep", "TELESCOPE_PARK", "Switch", "Ok", "rw",
+            {"PARK": "Off", "UNPARK": "On"}, time.monotonic(), 1,
+        )
 
     def get_property(self, device, name):
+        if name == "TELESCOPE_PARK":
+            return self.park_property
         return self.current
 
     def wait_property(self, device, name, *, timeout, after_revision=-1):
@@ -54,6 +60,13 @@ class FakeTransport:
 
     def issue_switch(self, device, name, element, *, timeout=3.0):
         self.commands.append((name, element))
+        if name == "TELESCOPE_PARK":
+            self.park_property = IndiProperty(
+                device, name, "Switch", "Ok", "rw",
+                {"PARK": "On" if element == "PARK" else "Off",
+                 "UNPARK": "On" if element == "UNPARK" else "Off"},
+                time.monotonic(), self.park_property.revision + 1,
+            )
         return 1
 
     def set_switch(self, device, name, element, *, timeout=3.0):
@@ -99,13 +112,40 @@ class IndiHomeRouteTests(unittest.TestCase):
         self.assertFalse(router.authority_established)
         self.assertEqual(transport.commands, [("TELESCOPE_PARK", "PARK")])
 
-    def test_repeated_park_is_idempotently_confirmed_without_motion(self):
-        transport = FakeTransport([], initial="nNPET260")
+    def test_repeated_park_is_idempotent_but_refreshes_explicit_evidence(self):
+        transport = FakeTransport([
+            status("nNPET260", 2), status("nNPET260", 3),
+        ], initial="nNPET260")
         router = IndiHomeRouter(
             transport, FakeReader(parked=True), "LX200 OnStep"
         )
         result = router.park()
         self.assertTrue(result.confirmed)
+        self.assertTrue(result.park_evidence_consistent)
+        self.assertEqual(transport.commands, [("TELESCOPE_PARK", "PARK")])
+
+    def test_repeated_park_while_motion_pending_never_sends_unpark(self):
+        transport = FakeTransport([], initial="pET260")
+        reader = FakeReader(parked=False)
+        reader.read = lambda: SimpleNamespace(
+            status_live=True, parked=False, at_home=False, tracking=False,
+            at_limit=False, slewing=True, raw_status="pET260", blockers=(),
+        )
+        result = IndiHomeRouter(transport, reader, "LX200 OnStep").park()
+        self.assertFalse(result.confirmed)
+        self.assertEqual(transport.commands, [])
+
+    def test_standard_park_busy_is_reported_pending_without_second_command(self):
+        transport = FakeTransport([], initial="nNpET260")
+        transport.park_property = IndiProperty(
+            "LX200 OnStep", "TELESCOPE_PARK", "Switch", "Busy", "rw",
+            {"PARK": "On", "UNPARK": "Off"}, time.monotonic(), 2,
+        )
+        result = IndiHomeRouter(
+            transport, FakeReader(parked=False), "LX200 OnStep"
+        ).park()
+        self.assertFalse(result.confirmed)
+        self.assertIn("PARK_PENDING", result.error)
         self.assertEqual(transport.commands, [])
 
     def test_failed_park_requests_stop_but_not_home(self):

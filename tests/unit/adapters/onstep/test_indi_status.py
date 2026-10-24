@@ -30,6 +30,12 @@ class FakeTransport:
             "TELESCOPE_PIER_SIDE": prop("TELESCOPE_PIER_SIDE", {
                 "PIER_EAST": "On", "PIER_WEST": "Off"
             }),
+            "HORIZONTAL_COORD": prop("HORIZONTAL_COORD", {
+                "AZ": "359.0", "ALT": "45.0"
+            }),
+            "TELESCOPE_PARK": prop("TELESCOPE_PARK", {
+                "PARK": "Off", "UNPARK": "On"
+            }),
         }
 
     def get_property(self, device, name):
@@ -126,8 +132,12 @@ class IndiStatusTests(unittest.TestCase):
         fake.properties["EQUATORIAL_EOD_COORD"] = prop("EQUATORIAL_EOD_COORD", {
             "RA": "9", "DEC": "60"
         }, revision=2)
+        fake.properties["TELESCOPE_PARK"] = prop("TELESCOPE_PARK", {
+            "PARK": "On", "UNPARK": "Off"
+        }, revision=2)
         result = reader.read()
         self.assertTrue(result.parked)
+        self.assertTrue(result.park_evidence_consistent)
         self.assertIn("mechanical_terminal_state", result.blockers)
         self.assertFalse(result.mechanical_safe)
 
@@ -147,6 +157,20 @@ class IndiStatusTests(unittest.TestCase):
         self.assertIn("coordinates_invalid", result.blockers)
         self.assertIn("onstep_limit_or_park_fault", result.blockers)
         self.assertTrue(result.motion_refused)
+
+    def test_conflicting_standard_and_raw_park_evidence_is_explicit(self):
+        fake = FakeTransport()
+        reader = IndiStatusReader(fake, config(), baseline_accepted=lambda: True)
+        reader.read()
+        fake.properties["OnStep Status"] = prop("OnStep Status", {
+            ":GU# return": "nNPET260", "Error": "None"
+        }, revision=2)
+        fake.properties["TELESCOPE_PARK"] = prop("TELESCOPE_PARK", {
+            "PARK": "Off", "UNPARK": "On"
+        }, revision=2)
+        result = reader.read()
+        self.assertFalse(result.park_evidence_consistent)
+        self.assertIn("park_state_conflict", result.blockers)
 
 
 if __name__ == "__main__":

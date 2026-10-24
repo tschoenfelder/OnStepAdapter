@@ -18,10 +18,14 @@ from .indi_guiding import (
 )
 from .indi_home import IndiHomeRouteResult, IndiHomeRouter, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState, IndiMeridianSupervisor, classify_meridian
+from .indi_mode import (
+    IndiModeController, IndiModeStatus, IndiModeTransitionResult, IndiOperatingMode,
+)
 from .indi_mount import IndiMount
 from .indi_status import IndiMountSnapshot, IndiStatusReader
 from .indi_stop import IndiStopResult, stop_mount_via_indi
 from .indi_tracking import IndiTrackingResult, enable_tracking_via_indi
+from .indi_terrestrial import IndiTerrestrialController, IndiTerrestrialMoveResult
 from .indi_transport import IndiTransport
 from .indi_gu import decode_gu
 from .meridian_policy import MeridianPolicy, derive_meridian_policy
@@ -90,8 +94,12 @@ class OnStepIndiClient:
         self._home_router: IndiHomeRouter | None = None
         self._axis_mover: IndiAxisMover | None = None
         self._guide_controller: IndiGuideController | None = None
+        self._terrestrial_controller: IndiTerrestrialController | None = None
         self._supervisor: IndiMeridianSupervisor | None = None
         self._policy: MeridianPolicy | None = None
+        self._mode_controller = IndiModeController(
+            config.mode_state_path if config is not None else None
+        )
         self.mount = IndiMount(self)
         self.focuser = IndiFocuser(self._transport, config) if config is not None else None
 
@@ -147,6 +155,7 @@ class OnStepIndiClient:
         self._home_router = None
         self._axis_mover = None
         self._guide_controller = None
+        self._terrestrial_controller = None
         try:
             self._transport.connect(timeout=timeout)
             connected = self._transport.wait_property(self.device, "CONNECTION", timeout=timeout)
@@ -194,9 +203,11 @@ class OnStepIndiClient:
                     self._transport, self._config,
                     baseline_accepted=lambda: self.session_baseline_accepted,
                     home_authority=lambda: self.home_authority_established,
+                    operating_mode=lambda: self.mode_status().mode.value,
                 )
                 self._home_router = IndiHomeRouter(
-                    self._transport, self._status_reader, self.device
+                    self._transport, self._status_reader, self.device,
+                    park_stable_hold_seconds=self._config.terrestrial_stop_hold_seconds,
                 )
                 self._axis_mover = IndiAxisMover(
                     self._transport, self.device, self._config.observer_lat,
@@ -211,6 +222,11 @@ class OnStepIndiClient:
                     meridian_status=self.meridian_status,
                     emergency_stop=self.emergency_stop,
                     authority_policy=self._config.tracking_authority_policy,
+                )
+                self._terrestrial_controller = IndiTerrestrialController(
+                    self._transport, self._config, self._mode_controller,
+                    observe=self.observe_mount, stop=self.emergency_stop,
+                    clock=self._clock,
                 )
                 self._supervisor = IndiMeridianSupervisor(
                     observe=self.observe_mount, policy=policy, stop=self.emergency_stop
@@ -242,6 +258,7 @@ class OnStepIndiClient:
     ) -> IndiAxisMoveResult:
         if self._axis_mover is None or not self._transport.is_open:
             raise ConnectionError("INDI client is not connected")
+        self._require_astronomical_if_managed()
         return self._axis_mover.move(
             axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s, mode=mode
         )
@@ -256,6 +273,7 @@ class OnStepIndiClient:
     ) -> IndiGuidePulseResult:
         if self._guide_controller is None or not self._transport.is_open:
             raise ConnectionError("INDI client is not connected")
+        self._require_astronomical_if_managed()
         return self._guide_controller.pulse(
             direction, duration_ms, command_timeout=command_timeout
         )
@@ -278,6 +296,7 @@ class OnStepIndiClient:
     ) -> IndiGuideCorrectionResult:
         if self._guide_controller is None or not self._transport.is_open:
             raise ConnectionError("INDI client is not connected")
+        self._require_astronomical_if_managed()
         return self._guide_controller.correction(
             axis,
             offset_arcsec,
@@ -301,6 +320,7 @@ class OnStepIndiClient:
     def enable_tracking(self, *, timeout: float = 8.0) -> IndiTrackingResult:
         if not self._transport.is_open or self._status_reader is None:
             raise ConnectionError("INDI client is not connected")
+        self._require_astronomical_if_managed()
         return enable_tracking_via_indi(
             self._transport, self.device, observe=self.observe_mount,
             meridian_status=self.meridian_status,
@@ -315,35 +335,99 @@ class OnStepIndiClient:
         self._require_home_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
+        self._refuse_while_terrestrial_motion_active()
         return self._home_router.park_to_home(
             unpark_timeout=unpark_timeout, home_timeout=home_timeout
         )
 
     def unpark(self, *, timeout: float = 20.0) -> IndiUnparkResult:
         """Leave PARKED without requesting a HOME slew."""
-        self._require_home_motion()
+        self._require_park_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
-        return self._home_router.unpark(timeout=timeout)
+        self._refuse_while_terrestrial_motion_active()
+        self._mode_controller.clear_authorization()
+        result = self._home_router.unpark(timeout=timeout)
+        if result.unparked_confirmed and self.mode_status().mode is IndiOperatingMode.TERRESTRIAL:
+            snapshot = self.observe_mount()
+            if snapshot.tracking:
+                raise RuntimeError("Terrestrial UNPARK did not preserve TRACK_OFF")
+        return result
 
     def go_home(self, *, timeout: float = 120.0) -> IndiPositionResult:
         """Explicitly move to OnStep HOME and verify live arrival."""
         self._require_home_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
+        self._refuse_while_terrestrial_motion_active()
         return self._home_router.go_home(timeout=timeout)
 
     def park(self, *, timeout: float = 120.0) -> IndiPositionResult:
         """Explicitly move directly to OnStep's stored PARK position."""
-        self._require_home_motion()
+        self._require_park_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
-        return self._home_router.park(timeout=timeout)
+        self._refuse_while_terrestrial_motion_active()
+        self._mode_controller.clear_authorization()
+        result = self._home_router.park(timeout=timeout)
+        if (
+            result.confirmed and result.park_evidence_consistent and
+            self._config is not None and self._config.mode_state_path is not None
+        ):
+            if self._terrestrial_controller is not None:
+                self._terrestrial_controller.capture_park_reference(self.observe_mount())
+            self._mode_controller.authorize_after_park(
+                status_revision=result.status_revision
+            )
+        return result
+
+    def mode_status(self) -> IndiModeStatus:
+        return self._mode_controller.status()
+
+    def set_mode(
+        self, target: IndiOperatingMode | str,
+    ) -> IndiModeTransitionResult:
+        if not self._transport.is_open or self._status_reader is None:
+            raise ConnectionError("INDI client is not connected")
+        self._refuse_while_terrestrial_motion_active()
+        return self._mode_controller.set_mode(target, self.observe_mount())
+
+    def move_toward_north_horizon(
+        self, step_deg: float | None = None, *, timeout_s: float = 45.0,
+    ) -> IndiTerrestrialMoveResult:
+        if self._terrestrial_controller is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        return self._terrestrial_controller.move_toward_north_horizon(
+            step_deg, timeout_s=timeout_s
+        )
+
+    def move_away_from_north_horizon(
+        self, step_deg: float | None = None, *, timeout_s: float = 45.0,
+    ) -> IndiTerrestrialMoveResult:
+        if self._terrestrial_controller is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        return self._terrestrial_controller.move_away_from_north_horizon(
+            step_deg, timeout_s=timeout_s
+        )
+
+    def _require_astronomical_if_managed(self) -> None:
+        if self._config is not None and self._config.mode_state_path is not None:
+            self._mode_controller.require(IndiOperatingMode.ASTRONOMICAL)
+
+    def _refuse_while_terrestrial_motion_active(self) -> None:
+        if self._terrestrial_controller is not None and self._terrestrial_controller.busy:
+            raise RuntimeError("Terrestrial motion is active or stopping")
 
     def _require_home_motion(self) -> None:
         if self._config is None or not self._config.home_motion_enabled:
             raise RuntimeError(
                 "INDI HOME/PARK motion is disabled pending the supervised H-status check"
+            )
+
+    def _require_park_motion(self) -> None:
+        if self._config is None or not self._config.park_motion_enabled:
+            raise RuntimeError(
+                "INDI PARK/UNPARK motion is disabled in this installation"
             )
 
     def sync_time_location(
@@ -423,7 +507,9 @@ class OnStepIndiClient:
             self._status_reader = None
             self._axis_mover = None
             self._guide_controller = None
+            self._terrestrial_controller = None
             self._home_router = None
+            self._mode_controller.clear_authorization()
             self._transport.close()
 
     def __enter__(self) -> OnStepIndiClient:

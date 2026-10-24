@@ -39,6 +39,13 @@ class IndiMountSnapshot:
     status_revision: int = -1
     coordinates_revision: int = -1
     guiding: bool = False
+    operating_mode: str = "unknown"
+    altitude_deg: float | None = None
+    azimuth_deg: float | None = None
+    horizontal_age_ms: float | None = None
+    horizontal_live: bool = False
+    standard_parked: bool | None = None
+    park_evidence_consistent: bool = False
 
 
 class IndiStatusReader:
@@ -51,6 +58,7 @@ class IndiStatusReader:
         *,
         baseline_accepted: Callable[[], bool],
         home_authority: Callable[[], bool] | None = None,
+        operating_mode: Callable[[], str] | None = None,
         max_age_seconds: float = 3.0,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -60,6 +68,7 @@ class IndiStatusReader:
         self.config = config
         self.baseline_accepted = baseline_accepted
         self.home_authority = home_authority or (lambda: False)
+        self.operating_mode = operating_mode or (lambda: "unknown")
         self.max_age_seconds = max_age_seconds
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._initial_revisions: dict[str, int] = {}
@@ -70,12 +79,16 @@ class IndiStatusReader:
         status = self.transport.get_property(device, "OnStep Status")
         coords = self.transport.get_property(device, "EQUATORIAL_EOD_COORD")
         pier = self.transport.get_property(device, "TELESCOPE_PIER_SIDE")
+        horizontal = self.transport.get_property(device, "HORIZONTAL_COORD")
+        standard_park = self.transport.get_property(device, "TELESCOPE_PARK")
         blockers: list[str] = []
         if not self.transport.is_open or connection is None or connection.values.get("CONNECT") != "On":
             blockers.append("indi_device_disconnected")
         status_live, status_age = self._live("OnStep Status", status)
         coords_live, coords_age = self._live("EQUATORIAL_EOD_COORD", coords)
         pier_live, _ = self._live("TELESCOPE_PIER_SIDE", pier)
+        horizontal_live, horizontal_age = self._live("HORIZONTAL_COORD", horizontal)
+        park_live, _ = self._live("TELESCOPE_PARK", standard_park)
         if not status_live:
             blockers.append("onstep_status_not_fresh")
         if not coords_live:
@@ -123,6 +136,22 @@ class IndiStatusReader:
             blockers.append("hour_angle_unavailable")
         if decoded.get("parked") or decoded.get("at_home"):
             blockers.append("mechanical_terminal_state")
+        standard_parked = None
+        if standard_park is not None:
+            if standard_park.values.get("PARK") == "On":
+                standard_parked = True
+            elif standard_park.values.get("UNPARK") == "On":
+                standard_parked = False
+        park_consistent = bool(
+            standard_park is not None and
+            standard_park.state.lower() == "ok" and
+            standard_parked is not None and
+            standard_parked == bool(decoded.get("parked"))
+        )
+        if standard_parked is not None and standard_parked != bool(decoded.get("parked")):
+            blockers.append("park_state_conflict")
+        altitude_deg = self._number(horizontal, "ALT", -90, 90)
+        azimuth_deg = self._number(horizontal, "AZ", 0, 360)
         authority_home = self.home_authority()
         if not authority_home:
             blockers.append("home_authority_unestablished")
@@ -151,6 +180,13 @@ class IndiStatusReader:
             status_revision=status.revision if status is not None else -1,
             coordinates_revision=coords.revision if coords is not None else -1,
             guiding=bool(decoded.get("guiding")),
+            operating_mode=self.operating_mode(),
+            altitude_deg=altitude_deg,
+            azimuth_deg=azimuth_deg,
+            horizontal_age_ms=horizontal_age,
+            horizontal_live=horizontal_live and altitude_deg is not None,
+            standard_parked=standard_parked,
+            park_evidence_consistent=park_consistent,
         )
 
     def _live(self, name: str, prop: IndiProperty | None) -> tuple[bool, float | None]:

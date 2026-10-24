@@ -1,8 +1,8 @@
-# OnStepAdapter 0.6.2
+# OnStepAdapter 0.7.0
 
 Python 3.13+ access to an OnStep mount and focuser through an existing local
 INDI server and its unchanged `LX200 OnStep` driver. The package is
-`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.2 does not open
+`onstep-adapter`; the import is `onstep_adapter`. Version 0.7.0 does not open
 the controller's serial port, run a daemon, or disconnect other INDI clients.
 
 This is a deliberately restricted INDI release. It provides shared status,
@@ -19,7 +19,7 @@ Do not install 0.4.0 expecting the direct-serial 0.3.5 API.
 Install the local wheel on the Raspberry (Python 3.13 or newer):
 
 ```bash
-python3 -m pip install ./onstep_adapter-0.6.2-py3-none-any.whl
+python3 -m pip install ./onstep_adapter-0.7.0-py3-none-any.whl
 python3 -c 'import onstep_adapter; print(onstep_adapter.__version__)'
 ```
 
@@ -38,8 +38,9 @@ device `DISCONNECT`, so the driver, mount and other INDI clients stay connected.
 
 Copy [config.indi.example.toml](config.indi.example.toml) to an application-
 owned location and review the observer, meridian, and focuser limits. The
-example deliberately keeps `home_motion_enabled=false` and a conservative
-focuser software ceiling of 50000, even though INDI reports `FOCUS_MAX=100000`.
+example keeps unverified HOME routing disabled, enables physically exercised
+PARK/UNPARK for explicit mode transitions, and uses a conservative focuser
+software ceiling of 50000, even though INDI reports `FOCUS_MAX=100000`.
 The wheel also includes the same template as the package resource
 `onstep_adapter/config.indi.example.toml`.
 
@@ -167,6 +168,49 @@ repeated `park()` is idempotent when fresh raw OnStep status already proves
 the requested state. These mechanical operations remain disabled by
 the example configuration until their supervised acceptance is complete.
 General `goto()` remains unavailable.
+
+### Explicit Astronomical And Terrestrial Modes
+
+When `[terrestrial].state_file` is configured, the adapter publishes a shared
+`astronomical`, `terrestrial`, or `unknown` mode through
+`mount.mode_status()` and `mount.get_status().operating_mode`. The state file
+is locked and atomically replaced so local Python clients see one generation.
+It is not an OnStep/INDI property: removing or corrupting it produces
+`unknown`, and terrestrial commands fail closed.
+
+Every mode transition is caller-owned and requires this exact lifecycle:
+
+```python
+from onstep_adapter import IndiOperatingMode, OnStepClient, load_indi_config
+
+config = load_indi_config("~/.config/onstep_adapter/config.toml")
+with OnStepClient(config=config) as client:
+    parked = client.mount.park()       # explicit, even if already PARKED
+    if not parked.confirmed:
+        raise RuntimeError(parked.error)
+    changed = client.mount.set_mode(IndiOperatingMode.TERRESTRIAL)
+    client.mount.unpark()              # explicit; TRACK_OFF is verified
+    client.mount.move_toward_north_horizon()  # finite configured step
+```
+
+`park()` reconciles fresh raw OnStep `:GU#` PARKED evidence with standard
+`TELESCOPE_PARK`, requires stationary/non-tracking reports for the configured
+hold time, then grants this client one authorization valid for 30 seconds.
+`set_mode()` consumes it. Authorization is never persisted or inherited by a
+new process, and a concurrent client's mode generation invalidates it. The
+adapter never parks, unparks, enables tracking, or switches mode as a side
+effect of a movement request.
+
+In terrestrial mode, tracking and astronomical guide/coordinate operations
+are refused. `move_toward_north_horizon()` and
+`move_away_from_north_horizon()` use bounded standard INDI manual motion,
+request STOP before the estimated endpoint, and remain busy until fresh
+telemetry is stable. The pole branch is an estimate from the approximately
+12-hour logical RA discontinuity relative to the PARK sample with sidereal
+drift removed; ambiguous evidence refuses motion. The requested final step is
+clipped to `movement.min_alt_deg + terrestrial.horizon_margin_deg`. Logical
+sky coordinates are not motor encoders, so supervised hardware acceptance is
+still required before operational use.
 
 `enable_tracking()` uses INDI `TRACK_ON` and requires two fresh tracking
 reports after a real transition. The default

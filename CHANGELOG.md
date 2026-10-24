@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 - Unreleased
+
+- Added shared first-class astronomical/terrestrial mode arbitration.
+- Added one-shot explicit-PARK authorization for every mode transition.
+- Reconciled raw OnStep and standard INDI PARK completion with an idle hold.
+- Added finite pole-aware northern-horizon terrestrial steps, horizon clipping,
+  early STOP and stable-settle verification.
+- Blocked terrestrial tracking/guiding and blocked PARK/HOME/mode changes while
+  terrestrial motion is active or stopping.
+
 ## 0.6.2 - 2026-10-20
 
 - Move finite-axis target altitude and declination bounds into the runtime

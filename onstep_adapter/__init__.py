@@ -14,17 +14,21 @@ from .indi_guiding import (
 )
 from .indi_home import IndiHomeRouteResult, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState
+from .indi_mode import (
+    IndiModeStatus, IndiModeTransitionResult, IndiOperatingMode,
+)
 from .indi_mount import IndiMount
 from .indi_status import IndiMountSnapshot
 from .indi_stop import IndiStopResult
 from .indi_tracking import IndiTrackingResult
+from .indi_terrestrial import IndiTerrestrialMoveResult
 from .meridian_policy import MeridianPolicy
 
 OnStepClient = OnStepIndiClient
 OnStepMount = IndiMount
 OnStepFocuser = IndiFocuser
 
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 
 __all__ = [
     "IndiFocuserMoveResult",
@@ -35,6 +39,9 @@ __all__ = [
     "IndiGuideCorrectionResult",
     "IndiHomeRouteResult",
     "IndiMeridianState",
+    "IndiModeStatus",
+    "IndiModeTransitionResult",
+    "IndiOperatingMode",
     "IndiMountSnapshot",
     "IndiPositionResult",
     "IndiRuntimeConfig",
@@ -42,6 +49,7 @@ __all__ = [
     "IndiStopResult",
     "IndiSyncResult",
     "IndiTrackingResult",
+    "IndiTerrestrialMoveResult",
     "IndiUnparkResult",
     "MeridianPolicy",
     "GUIDE_CHUNK_MS",

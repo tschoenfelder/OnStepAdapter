@@ -25,13 +25,16 @@ class SelectiveBuildPy(build_py):
             "indi_focuser",
             "indi_guiding",
             "indi_meridian",
+            "indi_mode",
             "indi_mount",
+            "indi_terrestrial",
             "meridian_policy",
         },
         "onstep_adapter.tools": {
             "__init__",
             "indi_focuser_roundtrip",
             "indi_axis_angle_smoke",
+            "indi_terrestrial_smoke",
         },
     }
 

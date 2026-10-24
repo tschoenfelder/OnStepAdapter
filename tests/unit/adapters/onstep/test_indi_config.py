@@ -23,6 +23,10 @@ class IndiConfigTests(unittest.TestCase):
         self.assertEqual(config.movement_min_alt_deg, -2.0)
         self.assertEqual(config.movement_min_dec_deg, -80.0)
         self.assertEqual(config.movement_max_dec_deg, 80.0)
+        self.assertTrue(config.mode_state_path.endswith("mode_state.json"))
+        self.assertEqual(config.terrestrial_step_deg, 10.0)
+        self.assertEqual(config.terrestrial_horizon_margin_deg, 2.0)
+        self.assertEqual(config.terrestrial_slew_rate_element, "SLEW_MAX")
 
     def test_configured_stop_above_firmware_guard_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "below both firmware"):
@@ -89,6 +93,18 @@ class IndiConfigTests(unittest.TestCase):
                 encoding="ascii",
             )
             with self.assertRaisesRegex(ValueError, "DEC limits"):
+                load_indi_config(target)
+
+    def test_terrestrial_bounds_are_validated(self):
+        path = Path(__file__).resolve().parents[4] / "config.indi.example.toml"
+        original = path.read_text(encoding="ascii")
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "config.toml"
+            target.write_text(
+                original.replace("max_step_deg = 10.0", "max_step_deg = 0.0"),
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(ValueError, "Terrestrial steps"):
                 load_indi_config(target)
 
 
