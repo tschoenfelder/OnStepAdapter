@@ -160,7 +160,7 @@ class IndiStatusReader:
                 standard_parked = False
         park_consistent = bool(
             standard_park is not None and
-            standard_park.state.lower() == "ok" and
+            standard_park.state.lower() in {"idle", "ok"} and
             standard_parked is not None and
             standard_parked == bool(decoded.get("parked"))
         )

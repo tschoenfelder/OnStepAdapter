@@ -159,6 +159,22 @@ class IndiStatusTests(unittest.TestCase):
         self.assertIn("mechanical_terminal_state", result.blockers)
         self.assertFalse(result.mechanical_safe)
 
+    def test_idle_standard_park_state_reconciles_with_raw_park(self):
+        fake = FakeTransport()
+        fake.properties["OnStep Status"] = prop("OnStep Status", {
+            ":GU# return": "nNPET260", "Error": "None"
+        })
+        fake.properties["TELESCOPE_PARK"] = prop(
+            "TELESCOPE_PARK", {"PARK": "On", "UNPARK": "Off"},
+            state="Idle",
+        )
+        reader = IndiStatusReader(fake, config(), baseline_accepted=lambda: False)
+
+        result = reader.read()
+
+        self.assertTrue(result.park_evidence_consistent)
+        self.assertNotIn("park_state_conflict", result.blockers)
+
     def test_invalid_coordinates_and_limit_flag_block_motion(self):
         fake = FakeTransport()
         reader = IndiStatusReader(fake, config(), baseline_accepted=lambda: True)

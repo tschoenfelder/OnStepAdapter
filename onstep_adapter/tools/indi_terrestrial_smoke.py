@@ -31,7 +31,10 @@ def _run(client, step_deg: float | None) -> int:
     initial = client.mount.get_status()
     print(
         f"Initial state: parked={initial.parked} tracking={initial.tracking} "
-        f"slewing={initial.slewing} raw={initial.raw_status!r}."
+        f"slewing={initial.slewing} raw={initial.raw_status!r} "
+        f"standard_parked={initial.standard_parked} "
+        f"park_evidence_consistent={initial.park_evidence_consistent} "
+        f"blockers={initial.blockers}."
     )
     print(
         "When already parked, ENTER is also your physical PARK confirmation. No "

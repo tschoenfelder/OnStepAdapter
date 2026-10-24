@@ -128,6 +128,10 @@ class IndiHomeRouteTests(unittest.TestCase):
 
     def test_operator_confirmed_existing_park_is_idempotent_and_immediate(self):
         transport = FakeTransport([], initial="nNPET260")
+        transport.park_property = IndiProperty(
+            "LX200 OnStep", "TELESCOPE_PARK", "Switch", "Idle", "rw",
+            {"PARK": "On", "UNPARK": "Off"}, time.monotonic(), 1,
+        )
         router = IndiHomeRouter(
             transport, FakeReader(parked=True), "LX200 OnStep"
         )

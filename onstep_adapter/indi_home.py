@@ -362,7 +362,8 @@ class IndiHomeRouter:
             if standard is not None and standard.revision > after_park_revision:
                 park_fresh = True
             standard_parked = bool(
-                standard is not None and standard.state.lower() == "ok" and
+                standard is not None and
+                standard.state.lower() in {"idle", "ok"} and
                 standard.values.get("PARK") == "On" and
                 standard.values.get("UNPARK", "Off") != "On"
             )
