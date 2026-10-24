@@ -244,6 +244,10 @@ property does not become unsafe merely because the driver has not republished
 it while idle. Once motion starts, fresh RA/DEC updates and a verified stable
 STOP are mandatory. Another client changing the position invalidates the
 anchor unless current telemetry independently passes the live preflight.
+The unchanged OnStep status vector may remain cached while its value has not
+changed, so it is not treated as a per-second motion heartbeat. Fresh RA/DEC
+updates provide that heartbeat. A newly published fault, limit, PARK,
+tracking, disconnect, or conflicting state still aborts the move immediately.
 
 After mocked validation, the deferred supervised hardware acceptance command is:
 

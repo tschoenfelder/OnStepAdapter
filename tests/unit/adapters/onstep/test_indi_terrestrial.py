@@ -173,6 +173,34 @@ def test_legacy_slew_max_alias_resolves_to_highest_numeric_driver_rate():
     assert stops == ["stop"]
 
 
+@patch("onstep_adapter.indi_terrestrial.time.sleep")
+def test_long_move_accepts_unchanged_status_while_coordinates_refresh(unused_sleep):
+    mover, _, stops = controller([
+        sample(),
+        sample(dec=25, alt=35, slewing=True, status_live=False),
+        sample(dec=29.6, alt=30.4, slewing=True, status_live=False),
+        sample(dec=29.7, alt=30.3, status_live=False),
+        sample(dec=29.7, alt=30.3, status_live=False),
+    ])
+
+    result = mover.move_toward_north_horizon()
+
+    assert result.stop_confirmed
+    assert stops == ["stop"]
+
+
+def test_stale_coordinates_during_motion_trigger_stop():
+    mover, _, stops = controller([
+        sample(),
+        sample(coordinates_live=False, horizontal_live=False, slewing=True),
+    ])
+
+    with pytest.raises(RuntimeError, match="coordinate feedback became stale"):
+        mover.move_toward_north_horizon()
+
+    assert stops == ["stop"]
+
+
 @pytest.mark.parametrize(
     "unsafe,message",
     [

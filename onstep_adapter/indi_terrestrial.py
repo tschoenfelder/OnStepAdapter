@@ -230,8 +230,14 @@ class IndiTerrestrialController:
         ) <= 0.02
 
     def _validate_progress(self, sample) -> None:
-        if not sample.status_live or not sample.coordinates_live or not sample.horizontal_live:
-            raise RuntimeError("Terrestrial feedback became stale")
+        if not sample.coordinates_live or not sample.horizontal_live:
+            raise RuntimeError("Terrestrial coordinate feedback became stale")
+        if {
+            "indi_device_disconnected", "onstep_status_alert",
+            "onstep_reported_error", "onstep_limit_or_park_fault",
+            "park_state_conflict",
+        }.intersection(sample.blockers):
+            raise RuntimeError("Fault or conflicting feedback appeared during terrestrial motion")
         if sample.tracking or sample.at_limit or sample.parked:
             raise RuntimeError("Unsafe state appeared during terrestrial motion")
 
