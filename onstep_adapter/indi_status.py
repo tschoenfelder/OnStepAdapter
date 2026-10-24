@@ -10,7 +10,7 @@ from typing import Callable
 
 from .indi_config import IndiRuntimeConfig
 from .indi_transport import IndiProperty, IndiTransport
-from .indi_gu import decode_gu, local_sidereal_hours
+from .indi_gu import decode_gu, equatorial_to_horizontal, local_sidereal_hours
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,13 @@ class IndiMountSnapshot:
     status_revision: int = -1
     coordinates_revision: int = -1
     guiding: bool = False
+    operating_mode: str = "unknown"
+    altitude_deg: float | None = None
+    azimuth_deg: float | None = None
+    horizontal_age_ms: float | None = None
+    horizontal_live: bool = False
+    standard_parked: bool | None = None
+    park_evidence_consistent: bool = False
 
 
 class IndiStatusReader:
@@ -51,6 +58,7 @@ class IndiStatusReader:
         *,
         baseline_accepted: Callable[[], bool],
         home_authority: Callable[[], bool] | None = None,
+        operating_mode: Callable[[], str] | None = None,
         max_age_seconds: float = 3.0,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -60,9 +68,26 @@ class IndiStatusReader:
         self.config = config
         self.baseline_accepted = baseline_accepted
         self.home_authority = home_authority or (lambda: False)
+        self.operating_mode = operating_mode or (lambda: "unknown")
         self.max_age_seconds = max_age_seconds
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._initial_revisions: dict[str, int] = {}
+        self._operator_status_revision: int | None = None
+        self._operator_status_confirmed_at: float | None = None
+        self._operator_status_trusted_until: float | None = None
+
+    def trust_current_park_status(self, *, ttl_seconds: float = 30.0) -> int:
+        """Temporarily trust the current status after physical PARK confirmation."""
+        if not math.isfinite(ttl_seconds) or ttl_seconds <= 0:
+            raise ValueError("Operator PARK trust lifetime must be positive and finite")
+        prop = self.transport.get_property(self.config.device, "OnStep Status")
+        if prop is None:
+            raise RuntimeError("OnStep status is unavailable for PARK confirmation")
+        now = time.monotonic()
+        self._operator_status_revision = prop.revision
+        self._operator_status_confirmed_at = now
+        self._operator_status_trusted_until = now + ttl_seconds
+        return prop.revision
 
     def read(self) -> IndiMountSnapshot:
         device = self.config.device
@@ -70,12 +95,16 @@ class IndiStatusReader:
         status = self.transport.get_property(device, "OnStep Status")
         coords = self.transport.get_property(device, "EQUATORIAL_EOD_COORD")
         pier = self.transport.get_property(device, "TELESCOPE_PIER_SIDE")
+        horizontal = self.transport.get_property(device, "HORIZONTAL_COORD")
+        standard_park = self.transport.get_property(device, "TELESCOPE_PARK")
         blockers: list[str] = []
         if not self.transport.is_open or connection is None or connection.values.get("CONNECT") != "On":
             blockers.append("indi_device_disconnected")
         status_live, status_age = self._live("OnStep Status", status)
         coords_live, coords_age = self._live("EQUATORIAL_EOD_COORD", coords)
         pier_live, _ = self._live("TELESCOPE_PIER_SIDE", pier)
+        horizontal_live, horizontal_age = self._live("HORIZONTAL_COORD", horizontal)
+        park_live, _ = self._live("TELESCOPE_PARK", standard_park)
         if not status_live:
             blockers.append("onstep_status_not_fresh")
         if not coords_live:
@@ -123,6 +152,33 @@ class IndiStatusReader:
             blockers.append("hour_angle_unavailable")
         if decoded.get("parked") or decoded.get("at_home"):
             blockers.append("mechanical_terminal_state")
+        standard_parked = None
+        if standard_park is not None:
+            if standard_park.values.get("PARK") == "On":
+                standard_parked = True
+            elif standard_park.values.get("UNPARK") == "On":
+                standard_parked = False
+        park_consistent = bool(
+            standard_park is not None and
+            standard_park.state.lower() in {"idle", "ok"} and
+            standard_parked is not None and
+            standard_parked == bool(decoded.get("parked"))
+        )
+        if standard_parked is not None and standard_parked != bool(decoded.get("parked")):
+            blockers.append("park_state_conflict")
+        altitude_deg = self._number(horizontal, "ALT", -90, 90)
+        azimuth_deg = self._number(horizontal, "AZ", 0, 360)
+        horizontal_is_live = horizontal_live and altitude_deg is not None
+        if altitude_deg is None and ra_hours is not None and dec_deg is not None:
+            altitude_deg, azimuth_deg = equatorial_to_horizontal(
+                ra_hours,
+                dec_deg,
+                self.config.observer_lat,
+                self.config.observer_lon,
+                self.clock(),
+            )
+            horizontal_age = coords_age
+            horizontal_is_live = coords_live
         authority_home = self.home_authority()
         if not authority_home:
             blockers.append("home_authority_unestablished")
@@ -151,13 +207,30 @@ class IndiStatusReader:
             status_revision=status.revision if status is not None else -1,
             coordinates_revision=coords.revision if coords is not None else -1,
             guiding=bool(decoded.get("guiding")),
+            operating_mode=self.operating_mode(),
+            altitude_deg=altitude_deg,
+            azimuth_deg=azimuth_deg,
+            horizontal_age_ms=horizontal_age,
+            horizontal_live=horizontal_is_live,
+            standard_parked=standard_parked,
+            park_evidence_consistent=park_consistent,
         )
 
     def _live(self, name: str, prop: IndiProperty | None) -> tuple[bool, float | None]:
         if prop is None:
             return False, None
         first = self._initial_revisions.setdefault(name, prop.revision)
-        age = max(0.0, time.monotonic() - prop.received_at)
+        now = time.monotonic()
+        if (
+            name == "OnStep Status" and
+            prop.revision == self._operator_status_revision and
+            self._operator_status_confirmed_at is not None and
+            self._operator_status_trusted_until is not None and
+            now <= self._operator_status_trusted_until
+        ):
+            age = max(0.0, now - self._operator_status_confirmed_at)
+            return True, age * 1000.0
+        age = max(0.0, now - prop.received_at)
         return prop.revision > first and age <= self.max_age_seconds, age * 1000.0
 
     @staticmethod

@@ -183,6 +183,29 @@ class IndiTransport:
         )
         return before.revision
 
+    def issue_switches(
+        self, device: str, name: str, values: dict[str, bool],
+        *, timeout: float = 3.0,
+    ) -> int:
+        """Issue an explicit multi-element switch update for manual motion."""
+        if not values:
+            raise ValueError("At least one INDI switch value is required")
+        before = self.wait_property(device, name, timeout=timeout)
+        if (
+            before.kind != "Switch" or before.permission == "ro" or
+            not values.keys() <= before.values.keys()
+        ):
+            raise ValueError(f"{device}.{name} is not a writable INDI switch")
+        body = "".join(
+            f"<oneSwitch name={quoteattr(element)}>{'On' if value else 'Off'}</oneSwitch>"
+            for element, value in values.items()
+        )
+        self._send(
+            f"<newSwitchVector device={quoteattr(device)} name={quoteattr(name)}>"
+            f"{body}</newSwitchVector>"
+        )
+        return before.revision
+
     def set_text(
         self,
         device: str,

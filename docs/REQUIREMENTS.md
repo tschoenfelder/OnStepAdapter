@@ -197,3 +197,30 @@ documented authority gates.
   refused until its exact mode, axis, and direction rate is present and valid.
 - Fresh motion safety preflight and inclusive hard-limit enforcement apply to
   guide and center corrections.
+# Terrestrial Mode Safety
+
+- **REQ-TER-001 (P0):** A transition between astronomical and terrestrial
+  mode requires a fresh, explicit, caller-initiated PARK transaction whose raw
+  OnStep and standard INDI evidence agree and remain stationary for a bounded
+  hold. The resulting authorization is one-shot, short-lived, and not
+  persistent.
+- **REQ-TER-002 (P0):** The adapter shall never implicitly PARK, UNPARK, enable
+  tracking, or switch mode as part of a terrestrial movement request.
+- **REQ-TER-003 (P0):** Shared local clients shall arbitrate one atomically
+  persisted mode generation. Missing, corrupt, stale, or raced provenance
+  fails closed. A restarted client does not inherit PARK authorization.
+- **REQ-TER-004 (P0):** Terrestrial movement shall be finite, tracking-off,
+  feedback monitored, pole-branch aware, horizon clipped, and followed by a
+  verified stable stop. Ambiguous pole evidence, stale telemetry, faults,
+  limits, or concurrent motion refuse the command.
+- **REQ-TER-005 (P0):** Astronomical guide, goto, flip, and tracking enable are
+  unavailable while shared mode is terrestrial. Emergency stop remains
+  available in every mode and state.
+- **REQ-TER-006 (P0):** Logical RA/DEC and the inferred pole branch are
+  estimates, not independent motor-axis or encoder evidence.
+- **REQ-TER-007 (P0):** If the unchanged INDI driver does not expose horizontal
+  coordinates, the adapter may derive ALT/AZ from current logical RA/DEC,
+  Raspberry time, and configured observer location. The confirmed stationary
+  UNPARK position may anchor only the start of the next bounded move; motion
+  progress and settling still require fresh coordinate telemetry.
+

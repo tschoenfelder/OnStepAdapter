@@ -6,6 +6,10 @@ from onstep_adapter import (
     IndiGuideCalibration,
     IndiGuideCorrectionResult,
     IndiGuidePulseResult,
+    IndiModeStatus,
+    IndiModeTransitionResult,
+    IndiOperatingMode,
+    IndiTerrestrialMoveResult,
     load_indi_config,
     __version__,
 )
@@ -16,7 +20,7 @@ from pathlib import Path
 
 
 def test_public_release_surface() -> None:
-    assert __version__ == "0.6.2"
+    assert __version__ == "0.7.0"
     assert OnStepClient is not None
     assert OnStepMount is not None
     assert OnStepFocuser is not None
@@ -25,6 +29,10 @@ def test_public_release_surface() -> None:
     assert IndiGuidePulseResult is not None
     assert IndiGuideCalibration is not None
     assert IndiGuideCorrectionResult is not None
+    assert IndiModeStatus is not None
+    assert IndiModeTransitionResult is not None
+    assert IndiOperatingMode is not None
+    assert IndiTerrestrialMoveResult is not None
     assert OnStepClient.__module__ == "onstep_adapter.indi_client"
 
 
@@ -47,12 +55,12 @@ def test_standalone_packaging_does_not_ship_smart_telescope_namespace() -> None:
         assert "smart_telescope." not in text
 
 
-def test_062_wheel_manifest_is_indi_only() -> None:
+def test_070_wheel_manifest_is_indi_only() -> None:
     root = Path(__file__).resolve().parents[4]
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     setup = (root / "setup.py").read_text(encoding="utf-8")
 
-    assert 'version = "0.6.2"' in pyproject
+    assert 'version = "0.7.0"' in pyproject
     assert 'onstep_adapter = ["config.indi.example.toml"]' in pyproject
     assert "pyserial" not in pyproject
     for excluded in ('"client"', '"serial_bus"', '"mount"', '"focuser"'):
@@ -60,6 +68,8 @@ def test_062_wheel_manifest_is_indi_only() -> None:
     assert '"indi_client"' in setup
     assert '"indi_focuser"' in setup
     assert '"indi_guiding"' in setup
+    assert '"indi_mode"' in setup
+    assert '"indi_terrestrial"' in setup
 
 
 def test_home_confirmation_is_required_by_default() -> None:

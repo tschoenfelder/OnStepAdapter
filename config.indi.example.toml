@@ -5,8 +5,10 @@ host = "127.0.0.1"
 port = 7624
 device = "LX200 OnStep"
 safe_meridian_flip_via_home = true
-# Remains false until the post-0.4.0 supervised INDI HOME/PARK test.
+# Remains false until the separate supervised INDI HOME H-status test.
 home_motion_enabled = false
+# PARK/UNPARK is physically exercised and required by terrestrial transitions.
+park_motion_enabled = true
 # "strict" requires this client's accepted time/site and HOME authority.
 # "controller_managed" permits TRACK_ON from fresh, fault-free OnStep status
 # and reports missing authority as warnings for applications that manage it.
@@ -30,6 +32,21 @@ reserve_seconds = 30.0
 min_alt_deg = -2.0
 min_dec_deg = -80.0
 max_dec_deg = 80.0
+
+[terrestrial]
+# Shared local arbitration state for every Python client on this Raspberry.
+# A missing/corrupt file makes mode transitions and terrestrial motion fail closed.
+state_file = "/home/astro/.config/onstep_adapter/mode_state.json"
+# One request is always finite. The adapter never exposes indefinite motion.
+step_deg = 10.0
+max_step_deg = 10.0
+# With movement.min_alt_deg=-2, this leaves a final effective floor of 0 deg.
+horizon_margin_deg = 2.0
+# Request STOP before the estimated endpoint and wait for stable telemetry.
+brake_lead_deg = 0.5
+stop_hold_seconds = 3.0
+# Standard INDI maximum slew-rate switch used by the supervised v10.22 path.
+slew_rate_element = "9" # highest rate exposed by tested indi_lx200_OnStep
 
 [focuser]
 # INDI currently reports FOCUS_MAX=100000. Keep this lower conservative

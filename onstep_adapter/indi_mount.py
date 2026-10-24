@@ -24,8 +24,23 @@ class IndiMount:
     def go_home(self):
         return self._client.go_home()
 
-    def park(self):
-        return self._client.park()
+    def park(self, *, operator_confirmed_existing_park: bool = False):
+        return self._client.park(
+            operator_confirmed_existing_park=operator_confirmed_existing_park
+        )
+
+    def mode_status(self):
+        return self._client.mode_status()
+
+    def set_mode(self, target):
+        """Consume a fresh explicit-PARK authorization and change mode only."""
+        return self._client.set_mode(target)
+
+    def move_toward_north_horizon(self, step_deg: float | None = None, *, timeout_s=45.0):
+        return self._client.move_toward_north_horizon(step_deg, timeout_s=timeout_s)
+
+    def move_away_from_north_horizon(self, step_deg: float | None = None, *, timeout_s=45.0):
+        return self._client.move_away_from_north_horizon(step_deg, timeout_s=timeout_s)
 
     def stop(self):
         return self._client.emergency_stop()
