@@ -24,8 +24,10 @@ class IndiMount:
     def go_home(self):
         return self._client.go_home()
 
-    def park(self):
-        return self._client.park()
+    def park(self, *, operator_confirmed_existing_park: bool = False):
+        return self._client.park(
+            operator_confirmed_existing_park=operator_confirmed_existing_park
+        )
 
     def mode_status(self):
         return self._client.mode_status()

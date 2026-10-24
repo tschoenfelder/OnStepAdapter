@@ -34,14 +34,14 @@ def _run(client, step_deg: float | None) -> int:
         f"slewing={initial.slewing} raw={initial.raw_status!r}."
     )
     print(
-        "PARK verification is repeated even when already parked. In that case no "
-        "PARK command is sent and the mount must not move; two fresh raw-P reports "
-        "provide this client's reconciled evidence for the mode change."
+        "When already parked, ENTER is also your physical PARK confirmation. No "
+        "PARK command is sent and the mount must not move; matching raw-P and "
+        "standard INDI PARK evidence is trusted locally for at most 30 seconds."
     )
     if not _confirm("Press ENTER to request/confirm PARK; type ESC then ENTER to abort> "):
         client.mount.stop()
         return 2
-    parked = client.mount.park()
+    parked = client.mount.park(operator_confirmed_existing_park=initial.parked)
     print(f"PARK result: {parked}")
     if not parked.confirmed:
         return 1

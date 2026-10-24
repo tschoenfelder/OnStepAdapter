@@ -240,11 +240,12 @@ python3 -m onstep_adapter.tools.indi_terrestrial_smoke \
 It requires confirmation before explicit PARK, mode selection and UNPARK.
 At these three confirmation prompts, only an empty ENTER proceeds. Commands
 such as `w`, `s`, or `p` are rejected without transmission until the later
-`terrestrial>` command prompt is visible. The initial PARK verification is
-intentionally repeated when OnStep is already parked, but sends no redundant
-PARK command: two subsequent live raw-`P` reports plus the current standard
-INDI PARK state provide fresh, reconciled evidence owned by this client before
-changing the shared mode.
+`terrestrial>` command prompt is visible. When OnStep is already parked, the
+first ENTER is also an explicit physical operator confirmation and sends no
+redundant PARK command. Matching raw-`P` and standard INDI PARK evidence is
+then trusted locally for at most 30 seconds. Programmatic `park()` remains
+fail-closed unless the caller passes `operator_confirmed_existing_park=True`
+as the result of that physical confirmation.
 Each `w` or `s` command is one bounded step. `x`, ESC and Ctrl-C request a
 verified stop and never start automatic PARK/HOME cleanup. `p` explicitly
 parks; only then may `a` consume that fresh authorization to return to

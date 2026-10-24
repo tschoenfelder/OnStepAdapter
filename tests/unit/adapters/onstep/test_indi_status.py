@@ -60,6 +60,24 @@ class IndiStatusTests(unittest.TestCase):
         self.assertIn("time_site_authority_unestablished", result.blockers)
         self.assertIn("home_authority_unestablished", result.blockers)
 
+    def test_physical_park_confirmation_temporarily_trusts_current_revision(self):
+        fake = FakeTransport()
+        fake.properties["OnStep Status"] = prop("OnStep Status", {
+            ":GU# return": "nNPET260", "Error": "None"
+        })
+        fake.properties["TELESCOPE_PARK"] = prop("TELESCOPE_PARK", {
+            "PARK": "On", "UNPARK": "Off"
+        })
+        reader = IndiStatusReader(fake, config(), baseline_accepted=lambda: False)
+        self.assertFalse(reader.read().status_live)
+
+        revision = reader.trust_current_park_status()
+        confirmed = reader.read()
+
+        self.assertEqual(revision, 1)
+        self.assertTrue(confirmed.status_live)
+        self.assertTrue(confirmed.park_evidence_consistent)
+
     def test_live_controller_updates_report_geometry_but_not_mechanical_authority(self):
         fake = FakeTransport()
         reader = IndiStatusReader(

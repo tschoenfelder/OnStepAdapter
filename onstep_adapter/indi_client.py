@@ -362,18 +362,32 @@ class OnStepIndiClient:
         self._refuse_while_terrestrial_motion_active()
         return self._home_router.go_home(timeout=timeout)
 
-    def park(self, *, timeout: float = 120.0) -> IndiPositionResult:
+    def park(
+        self, *, timeout: float = 120.0,
+        operator_confirmed_existing_park: bool = False,
+    ) -> IndiPositionResult:
         """Explicitly move directly to OnStep's stored PARK position."""
         self._require_park_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
         self._refuse_while_terrestrial_motion_active()
         self._mode_controller.clear_authorization()
-        result = self._home_router.park(timeout=timeout)
+        result = self._home_router.park(
+            timeout=timeout,
+            operator_confirmed_existing_park=operator_confirmed_existing_park,
+        )
         if (
             result.confirmed and result.park_evidence_consistent and
             self._config is not None and self._config.mode_state_path is not None
         ):
+            if operator_confirmed_existing_park:
+                result_revision = self._status_reader.trust_current_park_status()
+                result = IndiPositionResult(
+                    result.destination, result.confirmed, result.final_raw_status,
+                    result.error, result.stop_result,
+                    status_revision=result_revision,
+                    park_evidence_consistent=result.park_evidence_consistent,
+                )
             if self._terrestrial_controller is not None:
                 self._terrestrial_controller.capture_park_reference(self.observe_mount())
             self._mode_controller.authorize_after_park(
@@ -390,7 +404,10 @@ class OnStepIndiClient:
         if not self._transport.is_open or self._status_reader is None:
             raise ConnectionError("INDI client is not connected")
         self._refuse_while_terrestrial_motion_active()
-        return self._mode_controller.set_mode(target, self.observe_mount())
+        result = self._mode_controller.set_mode(target, self.observe_mount())
+        if result.mount_remains_parked:
+            self._status_reader.trust_current_park_status()
+        return result
 
     def move_toward_north_horizon(
         self, step_deg: float | None = None, *, timeout_s: float = 45.0,

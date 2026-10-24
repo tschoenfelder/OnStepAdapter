@@ -72,6 +72,22 @@ class IndiStatusReader:
         self.max_age_seconds = max_age_seconds
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._initial_revisions: dict[str, int] = {}
+        self._operator_status_revision: int | None = None
+        self._operator_status_confirmed_at: float | None = None
+        self._operator_status_trusted_until: float | None = None
+
+    def trust_current_park_status(self, *, ttl_seconds: float = 30.0) -> int:
+        """Temporarily trust the current status after physical PARK confirmation."""
+        if not math.isfinite(ttl_seconds) or ttl_seconds <= 0:
+            raise ValueError("Operator PARK trust lifetime must be positive and finite")
+        prop = self.transport.get_property(self.config.device, "OnStep Status")
+        if prop is None:
+            raise RuntimeError("OnStep status is unavailable for PARK confirmation")
+        now = time.monotonic()
+        self._operator_status_revision = prop.revision
+        self._operator_status_confirmed_at = now
+        self._operator_status_trusted_until = now + ttl_seconds
+        return prop.revision
 
     def read(self) -> IndiMountSnapshot:
         device = self.config.device
@@ -193,7 +209,17 @@ class IndiStatusReader:
         if prop is None:
             return False, None
         first = self._initial_revisions.setdefault(name, prop.revision)
-        age = max(0.0, time.monotonic() - prop.received_at)
+        now = time.monotonic()
+        if (
+            name == "OnStep Status" and
+            prop.revision == self._operator_status_revision and
+            self._operator_status_confirmed_at is not None and
+            self._operator_status_trusted_until is not None and
+            now <= self._operator_status_trusted_until
+        ):
+            age = max(0.0, now - self._operator_status_confirmed_at)
+            return True, age * 1000.0
+        age = max(0.0, now - prop.received_at)
         return prop.revision > first and age <= self.max_age_seconds, age * 1000.0
 
     @staticmethod

@@ -27,6 +27,7 @@ class FakeReader:
             tracking=self.tracking, at_limit=False, slewing=False,
             raw_status="nNpHET260" if self.at_home else "nNPET260" if self.parked else "nNpET260",
             blockers=self.blockers, park_evidence_consistent=self.parked,
+            status_revision=1,
         )
 
 
@@ -80,30 +81,14 @@ class FakeTransport:
 
 
 class IndiHomeRouteTests(unittest.TestCase):
-    def test_first_park_waits_for_post_subscription_status(self):
-        transport = FakeTransport([
-            status("nNPET260", 2),
-            status("nNPET260", 3),
-            status("nNPET260", 4),
-        ], initial="nNPET260")
-
-        class InitiallyCachedReader(FakeReader):
-            def __init__(self):
-                super().__init__(parked=True)
-                self.reads = 0
-
-            def read(self):
-                self.reads += 1
-                result = super().read()
-                result.status_live = self.reads > 1
-                return result
-
+    def test_existing_park_without_operator_confirmation_fails_immediately(self):
+        transport = FakeTransport([], initial="nNPET260")
         result = IndiHomeRouter(
-            transport, InitiallyCachedReader(), "LX200 OnStep"
+            transport, FakeReader(parked=True), "LX200 OnStep"
         ).park()
 
-        self.assertTrue(result.confirmed)
-        self.assertEqual(result.status_revision, 4)
+        self.assertFalse(result.confirmed)
+        self.assertIn("operator confirmation", result.error)
         self.assertEqual(transport.commands, [])
 
     def test_go_home_only_when_explicitly_requested(self):
@@ -141,16 +126,31 @@ class IndiHomeRouteTests(unittest.TestCase):
         self.assertFalse(router.authority_established)
         self.assertEqual(transport.commands, [("TELESCOPE_PARK", "PARK")])
 
-    def test_repeated_park_is_idempotent_but_refreshes_explicit_evidence(self):
-        transport = FakeTransport([
-            status("nNPET260", 2), status("nNPET260", 3),
-        ], initial="nNPET260")
+    def test_operator_confirmed_existing_park_is_idempotent_and_immediate(self):
+        transport = FakeTransport([], initial="nNPET260")
         router = IndiHomeRouter(
             transport, FakeReader(parked=True), "LX200 OnStep"
         )
-        result = router.park()
+        result = router.park(operator_confirmed_existing_park=True)
         self.assertTrue(result.confirmed)
         self.assertTrue(result.park_evidence_consistent)
+        self.assertEqual(result.status_revision, 1)
+        self.assertEqual(transport.commands, [])
+
+    def test_operator_confirmation_does_not_override_park_conflict(self):
+        transport = FakeTransport([], initial="nNPET260")
+        reader = FakeReader(parked=True, blockers=("park_state_conflict",))
+        reader.read = lambda: SimpleNamespace(
+            status_live=False, parked=True, at_home=False, tracking=False,
+            at_limit=False, slewing=False, raw_status="nNPET260",
+            blockers=("park_state_conflict",), park_evidence_consistent=False,
+            status_revision=1,
+        )
+        result = IndiHomeRouter(
+            transport, reader, "LX200 OnStep"
+        ).park(operator_confirmed_existing_park=True)
+        self.assertFalse(result.confirmed)
+        self.assertIn("cannot override", result.error)
         self.assertEqual(transport.commands, [])
 
     def test_repeated_park_while_motion_pending_never_sends_unpark(self):
