@@ -26,7 +26,7 @@ class FakeReader:
             status_live=self.live, parked=self.parked, at_home=self.at_home,
             tracking=self.tracking, at_limit=False, slewing=False,
             raw_status="nNpHET260" if self.at_home else "nNPET260" if self.parked else "nNpET260",
-            blockers=self.blockers,
+            blockers=self.blockers, park_evidence_consistent=self.parked,
         )
 
 
@@ -35,9 +35,12 @@ class FakeTransport:
         self.current = status(initial, 1)
         self.updates = list(updates)
         self.commands = []
+        initially_parked = "P" in initial
         self.park_property = IndiProperty(
             "LX200 OnStep", "TELESCOPE_PARK", "Switch", "Ok", "rw",
-            {"PARK": "Off", "UNPARK": "On"}, time.monotonic(), 1,
+            {"PARK": "On" if initially_parked else "Off",
+             "UNPARK": "Off" if initially_parked else "On"},
+            time.monotonic(), 1,
         )
 
     def get_property(self, device, name):
@@ -101,7 +104,7 @@ class IndiHomeRouteTests(unittest.TestCase):
 
         self.assertTrue(result.confirmed)
         self.assertEqual(result.status_revision, 4)
-        self.assertEqual(transport.commands, [("TELESCOPE_PARK", "PARK")])
+        self.assertEqual(transport.commands, [])
 
     def test_go_home_only_when_explicitly_requested(self):
         transport = FakeTransport([
@@ -148,7 +151,7 @@ class IndiHomeRouteTests(unittest.TestCase):
         result = router.park()
         self.assertTrue(result.confirmed)
         self.assertTrue(result.park_evidence_consistent)
-        self.assertEqual(transport.commands, [("TELESCOPE_PARK", "PARK")])
+        self.assertEqual(transport.commands, [])
 
     def test_repeated_park_while_motion_pending_never_sends_unpark(self):
         transport = FakeTransport([], initial="pET260")

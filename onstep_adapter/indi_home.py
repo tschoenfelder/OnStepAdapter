@@ -102,22 +102,33 @@ class IndiHomeRouter:
                 "Fresh stationary, non-tracking and fault-free status is required", None,
             )
         self.authority_established = False
-        return self._move_to_park(timeout=timeout)
+        return self._move_to_park(
+            timeout=timeout,
+            already_parked=bool(
+                before.parked and before.park_evidence_consistent
+            ),
+        )
 
-    def _move_to_park(self, *, timeout: float) -> IndiPositionResult:
+    def _move_to_park(
+        self, *, timeout: float, already_parked: bool = False,
+    ) -> IndiPositionResult:
         raw_before = self.transport.get_property(self.device, "OnStep Status")
         park_before = self.transport.get_property(self.device, "TELESCOPE_PARK")
         raw_revision = raw_before.revision if raw_before is not None else -1
         park_revision = park_before.revision if park_before is not None else -1
         last_raw = raw_before.values.get(":GU# return") if raw_before else None
         try:
-            # PARK is idempotent. Reissuing PARK while already parked obtains
-            # fresh caller-owned evidence without ever toggling UNPARK.
-            self.transport.issue_switch(self.device, "TELESCOPE_PARK", "PARK")
+            # An already-On INDI PARK vector need not be published again by
+            # the driver.  In that case the explicit API call is satisfied by
+            # two subsequent live raw-P reports and sends no redundant motion
+            # command.  A non-parked mount still receives an explicit PARK.
+            if not already_parked:
+                self.transport.issue_switch(self.device, "TELESCOPE_PARK", "PARK")
             status = self._wait_park_completion(
                 timeout=timeout,
                 after_status_revision=raw_revision,
                 after_park_revision=park_revision,
+                require_park_refresh=not already_parked,
             )
             return IndiPositionResult(
                 "park", True, status["raw"], None, None,
@@ -290,11 +301,11 @@ class IndiHomeRouter:
 
     def _wait_park_completion(
         self, *, timeout: float, after_status_revision: int,
-        after_park_revision: int,
+        after_park_revision: int, require_park_refresh: bool = True,
     ) -> dict:
         deadline = time.monotonic() + timeout
         revision = after_status_revision
-        park_fresh = False
+        park_fresh = not require_park_refresh
         stable_since: float | None = None
         stable_polls = 0
         while True:
