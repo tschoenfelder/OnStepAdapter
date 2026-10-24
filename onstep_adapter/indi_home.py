@@ -73,7 +73,7 @@ class IndiHomeRouter:
 
     def go_home(self, *, timeout: float = 120.0) -> IndiPositionResult:
         """Explicitly move an unparked, stationary mount to controller HOME."""
-        before = self.reader.read()
+        before = self._fresh_preflight(timeout=timeout)
         if not self._ready(before) or before.parked or before.slewing or before.tracking:
             return IndiPositionResult(
                 "home", False, before.raw_status,
@@ -83,7 +83,7 @@ class IndiHomeRouter:
 
     def park(self, *, timeout: float = 120.0) -> IndiPositionResult:
         """Move directly to stored PARK; never silently route via HOME."""
-        before = self.reader.read()
+        before = self._fresh_preflight(timeout=timeout)
         standard = self.transport.get_property(self.device, "TELESCOPE_PARK")
         park_pending = bool(
             standard is not None and (
@@ -187,7 +187,7 @@ class IndiHomeRouter:
     def unpark(self, *, timeout: float = 20.0) -> IndiUnparkResult:
         """Leave PARKED and disable resumed tracking; never request HOME."""
         self.authority_established = False
-        before = self.reader.read()
+        before = self._fresh_preflight(timeout=timeout)
         if not self._ready(before) or not before.parked or before.slewing:
             return IndiUnparkResult(
                 False, "preflight", before.raw_status,
@@ -236,6 +236,24 @@ class IndiHomeRouter:
                     False, "unpark", last_raw, f"{exc}; stop also failed: {stop_exc}", None
                 )
             return IndiUnparkResult(False, "unpark", last_raw, str(exc), stopped)
+
+    def _fresh_preflight(self, *, timeout: float):
+        """Wait for one post-subscription OnStep update before motion checks."""
+        before = self.reader.read()
+        if before.status_live:
+            return before
+        current = self.transport.get_property(self.device, "OnStep Status")
+        revision = current.revision if current is not None else -1
+        try:
+            self.transport.wait_property(
+                self.device,
+                "OnStep Status",
+                timeout=min(max(timeout, 0.0), 5.0),
+                after_revision=revision,
+            )
+        except (ConnectionError, RuntimeError, TimeoutError, ValueError):
+            return before
+        return self.reader.read()
 
     def _wait_status(
         self, predicate, *, timeout: float, stable_polls: int = 1,

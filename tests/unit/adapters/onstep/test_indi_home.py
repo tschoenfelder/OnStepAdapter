@@ -77,6 +77,32 @@ class FakeTransport:
 
 
 class IndiHomeRouteTests(unittest.TestCase):
+    def test_first_park_waits_for_post_subscription_status(self):
+        transport = FakeTransport([
+            status("nNPET260", 2),
+            status("nNPET260", 3),
+            status("nNPET260", 4),
+        ], initial="nNPET260")
+
+        class InitiallyCachedReader(FakeReader):
+            def __init__(self):
+                super().__init__(parked=True)
+                self.reads = 0
+
+            def read(self):
+                self.reads += 1
+                result = super().read()
+                result.status_live = self.reads > 1
+                return result
+
+        result = IndiHomeRouter(
+            transport, InitiallyCachedReader(), "LX200 OnStep"
+        ).park()
+
+        self.assertTrue(result.confirmed)
+        self.assertEqual(result.status_revision, 4)
+        self.assertEqual(transport.commands, [("TELESCOPE_PARK", "PARK")])
+
     def test_go_home_only_when_explicitly_requested(self):
         transport = FakeTransport([
             status("pET260", 2),

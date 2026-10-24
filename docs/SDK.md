@@ -238,6 +238,12 @@ python3 -m onstep_adapter.tools.indi_terrestrial_smoke \
 ```
 
 It requires confirmation before explicit PARK, mode selection and UNPARK.
+At these three confirmation prompts, only an empty ENTER proceeds. Commands
+such as `w`, `s`, or `p` are rejected without transmission until the later
+`terrestrial>` command prompt is visible. The initial PARK request is
+intentionally repeated when OnStep is already parked: it must not move the
+mount and exists to obtain fresh, reconciled PARK evidence owned by this
+client before changing the shared mode.
 Each `w` or `s` command is one bounded step. `x`, ESC and Ctrl-C request a
 verified stop and never start automatic PARK/HOME cleanup. `p` explicitly
 parks; only then may `a` consume that fresh authorization to return to

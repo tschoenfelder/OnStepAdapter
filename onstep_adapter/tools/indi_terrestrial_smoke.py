@@ -11,21 +11,44 @@ def _prompt(message: str) -> str:
     return input(message).strip().lower()
 
 
+def _confirm(message: str) -> bool:
+    while True:
+        answer = _prompt(message)
+        if answer == "":
+            return True
+        if answer in {"\x1b", "esc"}:
+            return False
+        print("Only ENTER confirms. Type ESC then ENTER to abort; no command was sent.")
+
+
 def _run(client, step_deg: float | None) -> int:
     print("This test can move the mount. Maintain line of sight and cable clearance.")
     print("ESC or Ctrl-C sends STOP and starts no automatic PARK/HOME motion.")
-    if _prompt("ENTER requests explicit PARK; ESC aborts> ") == "\x1b":
+    print(
+        "Purpose: verify an explicit PARK -> TERRESTRIAL -> UNPARK transition, "
+        "then operator-requested finite north-horizon steps through INDI."
+    )
+    initial = client.mount.get_status()
+    print(
+        f"Initial state: parked={initial.parked} tracking={initial.tracking} "
+        f"slewing={initial.slewing} raw={initial.raw_status!r}."
+    )
+    print(
+        "The PARK request is repeated even when already parked. It should not move; "
+        "it obtains fresh, reconciled PARK evidence for this client's mode change."
+    )
+    if not _confirm("Press ENTER to request/confirm PARK; type ESC then ENTER to abort> "):
         client.mount.stop()
         return 2
     parked = client.mount.park()
     print(f"PARK result: {parked}")
     if not parked.confirmed:
         return 1
-    if _prompt("ENTER consumes PARK authorization and selects TERRESTRIAL> ") == "\x1b":
+    if not _confirm("Press ENTER to select TERRESTRIAL; type ESC then ENTER to abort> "):
         client.mount.stop()
         return 2
     print(client.mount.set_mode(IndiOperatingMode.TERRESTRIAL))
-    if _prompt("ENTER explicitly UNPARKS with tracking OFF> ") == "\x1b":
+    if not _confirm("Press ENTER to UNPARK with tracking OFF; type ESC then ENTER to abort> "):
         client.mount.stop()
         return 2
     unparked = client.mount.unpark()
