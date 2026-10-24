@@ -10,7 +10,7 @@ from typing import Callable
 
 from .indi_config import IndiRuntimeConfig
 from .indi_transport import IndiProperty, IndiTransport
-from .indi_gu import decode_gu, local_sidereal_hours
+from .indi_gu import decode_gu, equatorial_to_horizontal, local_sidereal_hours
 
 
 @dataclass(frozen=True)
@@ -168,6 +168,17 @@ class IndiStatusReader:
             blockers.append("park_state_conflict")
         altitude_deg = self._number(horizontal, "ALT", -90, 90)
         azimuth_deg = self._number(horizontal, "AZ", 0, 360)
+        horizontal_is_live = horizontal_live and altitude_deg is not None
+        if altitude_deg is None and ra_hours is not None and dec_deg is not None:
+            altitude_deg, azimuth_deg = equatorial_to_horizontal(
+                ra_hours,
+                dec_deg,
+                self.config.observer_lat,
+                self.config.observer_lon,
+                self.clock(),
+            )
+            horizontal_age = coords_age
+            horizontal_is_live = coords_live
         authority_home = self.home_authority()
         if not authority_home:
             blockers.append("home_authority_unestablished")
@@ -200,7 +211,7 @@ class IndiStatusReader:
             altitude_deg=altitude_deg,
             azimuth_deg=azimuth_deg,
             horizontal_age_ms=horizontal_age,
-            horizontal_live=horizontal_live and altitude_deg is not None,
+            horizontal_live=horizontal_is_live,
             standard_parked=standard_parked,
             park_evidence_consistent=park_consistent,
         )

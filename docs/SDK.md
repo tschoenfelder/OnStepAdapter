@@ -230,6 +230,15 @@ period. PARK/HOME/mode changes are blocked while moving or stopping; emergency
 stop remains available. Horizon clipping uses the configured movement floor
 plus margin. No exact high-speed endpoint or encoder accuracy is claimed.
 
+On the tested Terrans installation, `indi_lx200_OnStep` exposes RA/DEC but no
+standard `HORIZONTAL_COORD`. In that case the adapter derives geometric ALT/AZ
+from RA/DEC, the Raspberry clock, and `[observer]` location. A confirmed
+stationary terrestrial UNPARK creates the start anchor, so an unchanged INDI
+property does not become unsafe merely because the driver has not republished
+it while idle. Once motion starts, fresh RA/DEC updates and a verified stable
+STOP are mandatory. Another client changing the position invalidates the
+anchor unless current telemetry independently passes the live preflight.
+
 After mocked validation, the deferred supervised hardware acceptance command is:
 
 ```bash

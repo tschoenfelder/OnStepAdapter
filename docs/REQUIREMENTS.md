@@ -218,4 +218,9 @@ documented authority gates.
   available in every mode and state.
 - **REQ-TER-006 (P0):** Logical RA/DEC and the inferred pole branch are
   estimates, not independent motor-axis or encoder evidence.
+- **REQ-TER-007 (P0):** If the unchanged INDI driver does not expose horizontal
+  coordinates, the adapter may derive ALT/AZ from current logical RA/DEC,
+  Raspberry time, and configured observer location. The confirmed stationary
+  UNPARK position may anchor only the start of the next bounded move; motion
+  progress and settling still require fresh coordinate telemetry.
 

@@ -100,6 +100,25 @@ class IndiStatusTests(unittest.TestCase):
         self.assertTrue(result.motion_refused)
         self.assertIn("home_authority_unestablished", result.blockers)
 
+    def test_horizontal_coordinates_are_derived_when_driver_does_not_publish_them(self):
+        fake = FakeTransport()
+        del fake.properties["HORIZONTAL_COORD"]
+        reader = IndiStatusReader(
+            fake, config(), baseline_accepted=lambda: False,
+            clock=lambda: datetime(2026, 9, 22, 10, 0, tzinfo=timezone.utc),
+        )
+        reader.read()
+        fake.properties["EQUATORIAL_EOD_COORD"] = prop(
+            "EQUATORIAL_EOD_COORD", {"RA": "9.1841667", "DEC": "57.5352778"},
+            revision=2,
+        )
+
+        result = reader.read()
+
+        self.assertIsNotNone(result.altitude_deg)
+        self.assertIsNotNone(result.azimuth_deg)
+        self.assertTrue(result.horizontal_live)
+
     def test_confirmed_home_authority_is_reported_but_does_not_unlock_motion(self):
         fake = FakeTransport()
         reader = IndiStatusReader(

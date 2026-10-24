@@ -212,6 +212,13 @@ clipped to `movement.min_alt_deg + terrestrial.horizon_margin_deg`. Logical
 sky coordinates are not motor encoders, so supervised hardware acceptance is
 still required before operational use.
 
+The tested `indi_lx200_OnStep` driver does not publish `HORIZONTAL_COORD`.
+When that optional property is absent, the adapter derives ALT/AZ from the
+latest INDI RA/DEC, Raspberry time, and configured observer location. The
+verified stationary UNPARK position anchors the first operator-requested step;
+motion and settling still require new RA/DEC telemetry. Derived ALT/AZ and the
+pole branch remain logical safety estimates, not independent axis sensors.
+
 `enable_tracking()` uses INDI `TRACK_ON` and requires two fresh tracking
 reports after a real transition. The default
 `tracking_authority_policy="strict"` requires this client's accepted

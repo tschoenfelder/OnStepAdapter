@@ -352,6 +352,8 @@ class OnStepIndiClient:
             snapshot = self.observe_mount()
             if snapshot.tracking:
                 raise RuntimeError("Terrestrial UNPARK did not preserve TRACK_OFF")
+            if self._terrestrial_controller is not None:
+                self._terrestrial_controller.authorize_stationary_start(snapshot)
         return result
 
     def go_home(self, *, timeout: float = 120.0) -> IndiPositionResult:

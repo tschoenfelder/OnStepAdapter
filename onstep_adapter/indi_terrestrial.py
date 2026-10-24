@@ -52,6 +52,7 @@ class IndiTerrestrialController:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = threading.Lock()
         self._park_reference: tuple[float, float, datetime] | None = None
+        self._stationary_reference: tuple[float, float] | None = None
 
     @property
     def busy(self) -> bool:
@@ -66,6 +67,22 @@ class IndiTerrestrialController:
         ):
             raise RuntimeError("A fresh reconciled PARKED coordinate sample is required")
         self._park_reference = (snapshot.ra_hours, snapshot.dec_deg, self.clock())
+
+    def authorize_stationary_start(self, snapshot) -> None:
+        """Anchor the verified non-moving position after terrestrial UNPARK."""
+        if (
+            snapshot.parked or snapshot.at_home or snapshot.slewing or
+            snapshot.guiding or snapshot.tracking or snapshot.at_limit or
+            snapshot.ra_hours is None or snapshot.dec_deg is None or
+            snapshot.altitude_deg is None or
+            {
+                "indi_device_disconnected", "onstep_status_alert",
+                "onstep_reported_error", "onstep_limit_or_park_fault",
+                "park_state_conflict",
+            }.intersection(snapshot.blockers)
+        ):
+            raise RuntimeError("Verified stationary terrestrial UNPARK is required")
+        self._stationary_reference = (snapshot.ra_hours, snapshot.dec_deg)
 
     def move_toward_north_horizon(
         self, step_deg: float | None = None, *, timeout_s: float = 45.0,
@@ -137,6 +154,7 @@ class IndiTerrestrialController:
                 raise RuntimeError("Terrestrial STOP was not confirmed")
             final = self._wait_stable(last, deadline=deadline, poll_s=poll_s)
             measured = self._sky_separation(start, final)
+            self._stationary_reference = (final.ra_hours, final.dec_deg)
             return IndiTerrestrialMoveResult(
                 mode=IndiOperatingMode.TERRESTRIAL,
                 state="stopped",
@@ -160,11 +178,13 @@ class IndiTerrestrialController:
     def _validate_start(self, sample) -> None:
         if self._park_reference is None:
             raise RuntimeError("No PARK reference captured for this terrestrial session")
-        if (
-            not sample.status_live or not sample.coordinates_live or
-            not sample.horizontal_live or sample.altitude_deg is None or
-            sample.ra_hours is None or sample.dec_deg is None
-        ):
+        complete = (
+            sample.altitude_deg is not None and sample.ra_hours is not None and
+            sample.dec_deg is not None
+        )
+        live = sample.status_live and sample.coordinates_live and sample.horizontal_live
+        anchored = self._matches_stationary_reference(sample) if complete else False
+        if not complete or not (live or anchored):
             raise RuntimeError("Fresh status, sky coordinates and horizontal feedback are required")
         if sample.parked or sample.at_home or sample.slewing or sample.guiding:
             raise RuntimeError("Terrestrial motion requires unparked stationary status")
@@ -176,6 +196,14 @@ class IndiTerrestrialController:
             "park_state_conflict",
         }.intersection(sample.blockers):
             raise RuntimeError("Fault, limit or conflicting feedback blocks terrestrial motion")
+
+    def _matches_stationary_reference(self, sample) -> bool:
+        if self._stationary_reference is None:
+            return False
+        ra_hours, dec_deg = self._stationary_reference
+        return self._coordinate_separation(
+            ra_hours, dec_deg, sample.ra_hours, sample.dec_deg
+        ) <= 0.02
 
     def _validate_progress(self, sample) -> None:
         if not sample.status_live or not sample.coordinates_live or not sample.horizontal_live:
@@ -197,10 +225,18 @@ class IndiTerrestrialController:
 
     @staticmethod
     def _sky_separation(start, current) -> float:
-        ra1 = math.radians(start.ra_hours * 15.0)
-        ra2 = math.radians(current.ra_hours * 15.0)
-        dec1 = math.radians(start.dec_deg)
-        dec2 = math.radians(current.dec_deg)
+        return IndiTerrestrialController._coordinate_separation(
+            start.ra_hours, start.dec_deg, current.ra_hours, current.dec_deg
+        )
+
+    @staticmethod
+    def _coordinate_separation(
+        ra1_hours: float, dec1_deg: float, ra2_hours: float, dec2_deg: float,
+    ) -> float:
+        ra1 = math.radians(ra1_hours * 15.0)
+        ra2 = math.radians(ra2_hours * 15.0)
+        dec1 = math.radians(dec1_deg)
+        dec2 = math.radians(dec2_deg)
         cosine = (
             math.sin(dec1) * math.sin(dec2) +
             math.cos(dec1) * math.cos(dec2) * math.cos(ra2 - ra1)

@@ -71,6 +71,7 @@ def controller(samples, *, reference_ra=10.0, config=CONFIG):
     result.capture_park_reference(sample(
         ra=reference_ra, parked=True, park_evidence_consistent=True
     ))
+    result.authorize_stationary_start(sample(ra=reference_ra))
     return result, transport, stops
 
 
@@ -130,12 +131,32 @@ def test_ambiguous_pole_branch_refuses_without_motion():
     assert transport.commands == [] and stops == []
 
 
+def test_stationary_unpark_anchor_allows_delayed_first_step_preflight():
+    mover, transport, stops = controller([
+        sample(status_live=False, coordinates_live=False, horizontal_live=False),
+    ])
+    with pytest.raises(AssertionError, match="No mocked terrestrial sample remains"):
+        mover.move_toward_north_horizon()
+    assert transport.commands == [
+        ("set", "TELESCOPE_SLEW_RATE", "SLEW_MAX"),
+        ("issue", "TELESCOPE_MOTION_NS", "MOTION_NORTH"),
+    ]
+    assert stops == ["stop"]
+
+
+def test_stale_position_different_from_unpark_anchor_refuses():
+    mover, transport, stops = controller([
+        sample(ra=11.0, status_live=False, coordinates_live=False, horizontal_live=False),
+    ])
+    with pytest.raises(RuntimeError, match="Fresh"):
+        mover.move_toward_north_horizon()
+    assert transport.commands == [] and stops == []
+
+
 @pytest.mark.parametrize(
     "unsafe,message",
     [
         ({"tracking": True}, "Tracking"),
-        ({"status_live": False}, "Fresh"),
-        ({"horizontal_live": False}, "Fresh"),
         ({"at_limit": True}, "Fault"),
         ({"slewing": True}, "stationary"),
     ],
@@ -143,6 +164,16 @@ def test_ambiguous_pole_branch_refuses_without_motion():
 def test_unsafe_start_states_refuse_without_motion(unsafe, message):
     mover, transport, stops = controller([sample(**unsafe)])
     with pytest.raises(RuntimeError, match=message):
+        mover.move_toward_north_horizon()
+    assert transport.commands == [] and stops == []
+
+
+def test_stale_start_without_verified_stationary_anchor_refuses():
+    mover, transport, stops = controller([
+        sample(status_live=False, coordinates_live=False, horizontal_live=False),
+    ])
+    mover._stationary_reference = None
+    with pytest.raises(RuntimeError, match="Fresh"):
         mover.move_toward_north_horizon()
     assert transport.commands == [] and stops == []
 
