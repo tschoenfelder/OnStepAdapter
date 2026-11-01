@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add `onstep_mock`, a virtual OnStepX mount behind a local INDI server, for
+  testing applications against the unchanged adapter. Slews take real time
+  (with a speed factor), STOP works at any moment, UNPARK auto-tracks like
+  OnStepX, HOME and PARK are fixed, and SET HOME, SET PARK and SYNC are
+  rejected and logged. Tests inspect `server.mount` and `server.writes`.
+
 ## 0.6.2 - 2026-10-20
 
 - Move finite-axis target altitude and declination bounds into the runtime

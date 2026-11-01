@@ -29,6 +29,7 @@ include-package-data = false
 packages = [
   "onstep_adapter",
   "onstep_adapter.tools",
+  "onstep_mock",
 ]
 
 [tool.setuptools.package-data]
