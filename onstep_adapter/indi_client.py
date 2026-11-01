@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 from typing import Callable
 
 from .indi_config import IndiRuntimeConfig
@@ -19,6 +20,7 @@ from .indi_guiding import (
 )
 from .indi_home import IndiHomeRouteResult, IndiHomeRouter, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState, IndiMeridianSupervisor, classify_meridian
+from .indi_motion import MotionHandle, MotionToken
 from .indi_mount import IndiMount
 from .indi_status import IndiMountSnapshot, IndiStatusReader
 from .indi_stop import IndiStopResult, stop_mount_via_indi
@@ -105,6 +107,8 @@ class OnStepIndiClient:
         self._guide_controller: IndiGuideController | None = None
         self._supervisor: IndiMeridianSupervisor | None = None
         self._policy: MeridianPolicy | None = None
+        self._motion: MotionHandle | None = None
+        self._motion_lock = threading.Lock()
         self.mount = IndiMount(self)
         self.focuser = IndiFocuser(self._transport, config) if config is not None else None
 
@@ -249,16 +253,68 @@ class OnStepIndiClient:
             raise RuntimeError("Connect with an INDI runtime configuration first")
         return self._status_reader.read()
 
+    @property
+    def active_motion(self) -> MotionHandle | None:
+        """The move that is still running, if any."""
+        motion = self._motion
+        return motion if motion is not None and not motion.done else None
+
+    def _start_motion(self, kind: str, run) -> MotionHandle:
+        """Start ``run(token)`` in a worker and return its handle at once."""
+        with self._motion_lock:
+            if self.active_motion is not None:
+                raise RuntimeError(
+                    f"Another mount move ({self._motion.kind}) is active; "
+                    "stop it or wait for it first"
+                )
+            handle = MotionHandle(
+                kind, run, stop=self.emergency_stop, on_finish=self._motion_finished
+            )
+            self._motion = handle
+            if self.trace is not None:
+                self.trace.record("motion_start", kind=kind)
+            return handle._start()
+
+    def _motion_finished(self, handle: MotionHandle) -> None:
+        if self.trace is None:
+            return
+        progress = handle.progress()
+        self.trace.record(
+            "motion_end", kind=handle.kind, state=progress.state,
+            duration_s=progress.elapsed_s, error=progress.error,
+            result=handle._result,
+        )
+
+    def _require_no_motion(self) -> None:
+        if self.active_motion is not None:
+            raise RuntimeError(
+                f"A mount move ({self._motion.kind}) is active; stop it or wait for it first"
+            )
+
     def move_axis_deg(
         self, axis: str, offset_deg: float, *, timeout_s: float = 30.0,
         poll_s: float = 0.1,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
-    ) -> IndiAxisMoveResult:
+    ) -> MotionHandle:
+        """Start a finite axis move and return its handle at once.
+
+        ``handle.wait()`` returns an ``IndiAxisMoveResult`` or raises the
+        error the move ended with.
+        """
         if self._axis_mover is None or not self._transport.is_open:
             raise ConnectionError("INDI client is not connected")
-        return self._axis_mover.move(
+        self._axis_mover.validate_request(
             axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s, mode=mode
         )
+        mover = self._axis_mover
+
+        def run(token: MotionToken) -> IndiAxisMoveResult:
+            return mover.move(
+                axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s, mode=mode,
+                token=token,
+            )
+
+        return self._start_motion(f"{axis}_axis", run)
 
     def meridian_status(self) -> IndiMeridianState:
         if self._policy is None:
@@ -305,12 +361,22 @@ class OnStepIndiClient:
         self._supervisor.start()
 
     def emergency_stop(self, *, timeout: float = 5.0) -> IndiStopResult:
-        """Request abort and tracking off without requiring time/site authority."""
+        """Request abort and tracking off without requiring time/site authority.
+
+        Also ends the running move, if any, so its handle reports ``stopped``.
+        Safe to call from any thread at any time.
+        """
+        motion = self.active_motion
+        if motion is not None:
+            motion._request_stop()
         if not self._transport.is_open:
             raise ConnectionError("INDI client is not connected")
-        return stop_mount_via_indi(
+        result = stop_mount_via_indi(
             self._transport, self.device, confirmation_timeout=timeout
         )
+        if motion is not None:
+            motion._record_stop(result)
+        return result
 
     def enable_tracking(self, *, timeout: float = 8.0) -> IndiTrackingResult:
         if not self._transport.is_open or self._status_reader is None:
@@ -327,6 +393,7 @@ class OnStepIndiClient:
     ) -> IndiHomeRouteResult:
         """Route mechanically; no normal motion is unlocked by this prototype."""
         self._require_home_motion()
+        self._require_no_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
         return self._home_router.park_to_home(
@@ -336,23 +403,34 @@ class OnStepIndiClient:
     def unpark(self, *, timeout: float = 20.0) -> IndiUnparkResult:
         """Leave PARKED without requesting a HOME slew."""
         self._require_home_motion()
+        self._require_no_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
         return self._home_router.unpark(timeout=timeout)
 
-    def go_home(self, *, timeout: float = 120.0) -> IndiPositionResult:
-        """Explicitly move to OnStep HOME and verify live arrival."""
-        self._require_home_motion()
-        if self._home_router is None or not self._transport.is_open:
-            raise ConnectionError("Connect with an INDI runtime configuration first")
-        return self._home_router.go_home(timeout=timeout)
+    def go_home(self, *, timeout: float = 120.0) -> MotionHandle:
+        """Start the move to OnStep HOME and return its handle at once.
 
-    def park(self, *, timeout: float = 120.0) -> IndiPositionResult:
-        """Explicitly move directly to OnStep's stored PARK position."""
+        ``handle.wait()`` returns an ``IndiPositionResult`` once live arrival
+        is verified (or the move failed); ``handle.stop()`` ends it.
+        """
         self._require_home_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
-        return self._home_router.park(timeout=timeout)
+        router = self._home_router
+        return self._start_motion(
+            "home", lambda token: router.go_home(timeout=timeout, token=token)
+        )
+
+    def park(self, *, timeout: float = 120.0) -> MotionHandle:
+        """Start the move to OnStep's stored PARK and return its handle at once."""
+        self._require_home_motion()
+        if self._home_router is None or not self._transport.is_open:
+            raise ConnectionError("Connect with an INDI runtime configuration first")
+        router = self._home_router
+        return self._start_motion(
+            "park", lambda token: router.park(timeout=timeout, token=token)
+        )
 
     def _require_home_motion(self) -> None:
         if self._config is None or not self._config.home_motion_enabled:
@@ -426,6 +504,13 @@ class OnStepIndiClient:
         )
 
     def close(self) -> None:
+        motion = self.active_motion
+        if motion is not None and self._transport.is_open:
+            # Never leave a move running without its supervisor and transport.
+            try:
+                self.emergency_stop()
+            except (ConnectionError, RuntimeError, TimeoutError, ValueError):
+                pass
         try:
             if self._supervisor is not None:
                 self._supervisor.close()
@@ -440,6 +525,8 @@ class OnStepIndiClient:
             self._guide_controller = None
             self._home_router = None
             self._transport.close()
+            if motion is not None:
+                motion._thread.join(timeout=1.0)
 
     def __enter__(self) -> OnStepIndiClient:
         self.connect()

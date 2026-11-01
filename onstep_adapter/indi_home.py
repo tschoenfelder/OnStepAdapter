@@ -9,6 +9,7 @@ from .indi_status import IndiStatusReader
 from .indi_stop import IndiStopResult, stop_mount_via_indi
 from .indi_transport import IndiTransport
 from .indi_gu import decode_gu
+from .indi_motion import NO_STOP, STOP_CHECK_INTERVAL_S, MotionToken
 
 
 @dataclass(frozen=True)
@@ -65,18 +66,28 @@ class IndiHomeRouter:
             home.final_raw_status, home.error, home.stop_result,
         )
 
-    def go_home(self, *, timeout: float = 120.0) -> IndiPositionResult:
-        """Explicitly move an unparked, stationary mount to controller HOME."""
+    def go_home(
+        self, *, timeout: float = 120.0, token: MotionToken = NO_STOP,
+    ) -> IndiPositionResult:
+        """Explicitly move an unparked, stationary mount to controller HOME.
+
+        Blocks until arrival; ``OnStepIndiClient.go_home`` runs it in a
+        worker behind a ``MotionHandle``. ``token`` ends the wait early.
+        """
+        token.report("preflight")
         before = self.reader.read()
         if not self._ready(before) or before.parked or before.slewing or before.tracking:
             return IndiPositionResult(
                 "home", False, before.raw_status,
                 "Fresh unparked, stationary, non-tracking status is required", None,
             )
-        return self._move_to_home(timeout=timeout)
+        return self._move_to_home(timeout=timeout, token=token)
 
-    def park(self, *, timeout: float = 120.0) -> IndiPositionResult:
+    def park(
+        self, *, timeout: float = 120.0, token: MotionToken = NO_STOP,
+    ) -> IndiPositionResult:
         """Move directly to stored PARK; never silently route via HOME."""
+        token.report("preflight")
         before = self.reader.read()
         if not self._ready(before) or before.slewing or before.tracking:
             return IndiPositionResult(
@@ -92,10 +103,12 @@ class IndiHomeRouter:
                 decoded["parked"] and decoded["not_slewing"] and
                 not decoded["tracking"] and not decoded["park_failed"]
             ),
-            timeout=timeout,
+            timeout=timeout, token=token,
         )
 
-    def _move_to_home(self, *, timeout: float) -> IndiPositionResult:
+    def _move_to_home(
+        self, *, timeout: float, token: MotionToken = NO_STOP,
+    ) -> IndiPositionResult:
         result = self._move_to_position(
             destination="home", property_name="TELESCOPE_HOME", element="GO",
             predicate=lambda decoded: (
@@ -103,23 +116,25 @@ class IndiHomeRouter:
                 decoded["not_slewing"] and not decoded["tracking"] and
                 not decoded["park_failed"]
             ),
-            timeout=timeout,
+            timeout=timeout, token=token,
         )
         self.authority_established = result.confirmed
         return result
 
     def _move_to_position(
         self, *, destination: str, property_name: str, element: str,
-        predicate, timeout: float,
+        predicate, timeout: float, token: MotionToken = NO_STOP,
     ) -> IndiPositionResult:
         current = self.transport.get_property(self.device, "OnStep Status")
         last_raw = current.values.get(":GU# return") if current else None
         revision = current.revision if current is not None else -1
         try:
+            token.check()
             self.transport.issue_switch(self.device, property_name, element)
+            token.report("moving")
             status = self._wait_status(
                 predicate, timeout=timeout, stable_polls=2,
-                after_revision=revision,
+                after_revision=revision, token=token,
             )
             return IndiPositionResult(destination, True, status["raw"], None, None)
         except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
@@ -197,7 +212,7 @@ class IndiHomeRouter:
 
     def _wait_status(
         self, predicate, *, timeout: float, stable_polls: int = 1,
-        after_revision: int | None = None,
+        after_revision: int | None = None, token: MotionToken = NO_STOP,
     ) -> dict:
         current = self.transport.get_property(self.device, "OnStep Status")
         revision = (
@@ -207,14 +222,25 @@ class IndiHomeRouter:
         deadline = time.monotonic() + timeout
         stable = 0
         while stable < stable_polls:
+            token.check()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("OnStep did not confirm the mechanical route")
-            current = self.transport.wait_property(
-                self.device, "OnStep Status", timeout=remaining, after_revision=revision
-            )
+            # A stoppable move waits in short slices so a stop request is
+            # seen within STOP_CHECK_INTERVAL_S.
+            step = remaining if token is NO_STOP else min(remaining, STOP_CHECK_INTERVAL_S)
+            try:
+                current = self.transport.wait_property(
+                    self.device, "OnStep Status", timeout=step,
+                    after_revision=revision,
+                )
+            except TimeoutError:
+                if step >= remaining:
+                    raise
+                continue
             revision = current.revision
             raw = current.values.get(":GU# return", "")
+            token.report(raw_status=raw or None)
             if not raw:
                 raise RuntimeError("OnStep status is unavailable during mechanical route")
             decoded = decode_gu(raw)

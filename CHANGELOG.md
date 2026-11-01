@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Breaking:** `park()`, `go_home()`, `move_ra_axis_deg()`,
+  `move_dec_axis_deg()`, `move_ra()` and `move_dec()` no longer block. They
+  return a `MotionHandle` at once with `progress()`, `wait()` and `stop()`;
+  `wait()` returns the result the call used to return. `mount.stop()` and the
+  meridian supervisor end a running handle's move, only one move runs at a
+  time, and `close()` stops a move still running. Callers that want the old
+  behavior use `mount.go_home().wait()`.
+
 - Add an optional transaction trace (JSON Lines) of every INDI write, every
   received property update with decoded `:GU#` status, and every public mount
   call with its result or error. Enable it with `[trace] path` in the runtime

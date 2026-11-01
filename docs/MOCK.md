@@ -16,7 +16,7 @@ with SimulatedOnStepServer(SimConfig(speed=20)) as sim:
     with OnStepClient(config=runtime_config(sim)) as client:
         wait_for_live_status(client)   # adapter needs a fresh status first
         client.mount.unpark()
-        client.mount.go_home()
+        client.mount.go_home().wait()  # moves return a MotionHandle at once
         mount = sim.mount              # MountSnapshot of the internal state
         assert mount.at_home and mount.dec_deg == 90.0
         assert not mount.tracking
@@ -62,9 +62,23 @@ crossings and acceleration curves are not modelled.
   `sim.reject_next(property)`, `sim.freeze_status()`,
   `sim.drop_connections()`.
 
-## Current Limits
+## Stopping A Move From The Test
 
-The adapter's `go_home()`, `park()` and axis moves still wait for arrival in
-the calling thread. The mock already lets another thread stop them
-mid-slew; making those calls return immediately with a handle is planned
-adapter work.
+The adapter's `park()`, `go_home()` and axis moves return a `MotionHandle`
+at once, so a test can watch a slow slew and stop it from the same thread:
+
+```python
+with SimulatedOnStepServer(SimConfig(speed=1.0)) as sim:
+    ...
+    move = client.mount.go_home()
+    sim.wait_until(lambda m: m.motion == "SLEWING", timeout=3)
+    assert move.progress().state == "running"
+    stopped = move.stop()
+    assert stopped.stopped_confirmed and sim.mount.motion == "IDLE"
+    with pytest.raises(MotionStopped):
+        move.wait()
+```
+
+The mock itself needed no change for this: its device thread already moves
+the mount independently of the client, and an ABORT is applied on the next
+20 ms tick.

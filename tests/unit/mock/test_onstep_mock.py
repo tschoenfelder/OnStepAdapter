@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from onstep_adapter import MotionStopped
 from onstep_mock import Pose, SimConfig, SimulatedOnStepServer, VirtualMount, altaz
 
 DEVICE = "LX200 OnStep"
@@ -26,7 +27,7 @@ def test_unpark_stops_onstepx_auto_tracking_at_once(onstep_sim, onstep_client):
 
 def test_go_home_reaches_fixed_pole_pose(onstep_sim, onstep_client):
     onstep_client.mount.unpark()
-    result = onstep_client.mount.go_home()
+    result = onstep_client.mount.go_home().wait(timeout=30)
 
     assert result.confirmed
     mount = onstep_sim.mount
@@ -39,7 +40,7 @@ def test_go_home_reaches_fixed_pole_pose(onstep_sim, onstep_client):
 def test_park_returns_to_the_single_stored_pose(onstep_sim, onstep_client):
     onstep_sim.place(ha_h=-2.0, dec_deg=30.0, parked=False)
     time.sleep(0.4)  # let the client receive the new pose
-    result = onstep_client.mount.park()
+    result = onstep_client.mount.park().wait(timeout=30)
 
     assert result.confirmed
     mount = onstep_sim.mount
@@ -50,7 +51,7 @@ def test_park_returns_to_the_single_stored_pose(onstep_sim, onstep_client):
 def test_axis_move_ends_on_target_without_tracking(onstep_sim, onstep_client):
     onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
     time.sleep(0.4)
-    result = onstep_client.mount.move_dec_axis_deg(1.5)
+    result = onstep_client.mount.move_dec_axis_deg(1.5).wait(timeout=30)
 
     assert result.stop_confirmed
     mount = onstep_sim.mount
@@ -65,26 +66,105 @@ def slow_sim():
         yield sim
 
 
-def test_stop_interrupts_a_slew_that_takes_real_time(slow_sim):
+@pytest.fixture
+def slow_client(slow_sim):
     from onstep_mock.testing import runtime_config, wait_for_live_status
     from onstep_adapter import OnStepClient
 
     slow_sim.place(ha_h=-2.0, dec_deg=30.0, parked=False)
     with OnStepClient(config=runtime_config(slow_sim)) as client:
         wait_for_live_status(client)
-        worker = threading.Thread(target=lambda: client.go_home(timeout=4.0))
-        worker.start()
-        slow_sim.wait_until(lambda m: m.motion == "SLEWING", timeout=3)
-        time.sleep(0.5)
+        yield client
 
-        stopped = client.mount.stop()
-        worker.join(timeout=15)
+
+def test_go_home_returns_at_once_and_its_handle_stops_the_slew(slow_sim, slow_client):
+    started = time.monotonic()
+    move = slow_client.mount.go_home()
+    assert time.monotonic() - started < 0.5  # the caller is never blocked
+
+    slow_sim.wait_until(lambda m: m.motion == "SLEWING", timeout=3)
+    time.sleep(0.5)
+    progress = move.progress()
+    assert (progress.kind, progress.state, progress.stage) == ("home", "running", "moving")
+    assert not move.done
+
+    stopped = move.stop()
 
     assert stopped.stopped_confirmed
+    with pytest.raises(MotionStopped) as raised:
+        move.wait(timeout=2)
+    assert raised.value.stop_result is stopped
+    assert move.state == "stopped" and move.progress().stage == "stopped"
     mount = slow_sim.mount
     assert mount.motion == "IDLE" and not mount.at_home and not mount.tracking
     assert 30.0 < mount.dec_deg < 90.0
     assert "TELESCOPE_ABORT_MOTION" in [w.property for w in slow_sim.writes]
+
+
+def test_mount_stop_also_ends_a_running_handle(slow_sim, slow_client):
+    move = slow_client.mount.park()
+    slow_sim.wait_until(lambda m: m.motion == "SLEWING", timeout=3)
+
+    stopped = slow_client.mount.stop()
+
+    assert stopped.stopped_confirmed
+    with pytest.raises(MotionStopped):
+        move.wait(timeout=2)
+    assert move.stop_result is stopped
+    assert not slow_sim.mount.parked and slow_sim.mount.motion == "IDLE"
+
+
+def test_only_one_move_runs_at_a_time(slow_sim, slow_client):
+    move = slow_client.mount.go_home()
+    with pytest.raises(RuntimeError, match="active"):
+        slow_client.mount.park()
+    with pytest.raises(RuntimeError, match="active"):
+        slow_client.mount.move_dec_axis_deg(1.0)
+    with pytest.raises(RuntimeError, match="active"):
+        slow_client.mount.unpark()
+    move.stop()
+    with pytest.raises(MotionStopped):
+        move.wait(timeout=2)
+    assert slow_client.active_motion is None
+
+
+def test_axis_move_reports_fraction_and_can_be_stopped(slow_sim, slow_client):
+    move = slow_client.mount.move_dec_axis_deg(8.0)
+    slow_sim.wait_until(lambda m: m.dec_deg > 32.0, timeout=5)
+    deadline = time.monotonic() + 2
+    while (move.progress().fraction or 0.0) <= 0.0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    fraction = move.progress().fraction
+    assert fraction is not None and 0.0 < fraction < 1.0
+
+    assert move.stop().stopped_confirmed
+    with pytest.raises(MotionStopped):
+        move.wait(timeout=2)
+    mount = slow_sim.mount
+    assert 30.0 < mount.dec_deg < 38.0 and mount.motion == "IDLE"
+
+
+def test_invalid_axis_move_is_refused_before_anything_starts(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    writes = len(onstep_sim.writes)
+    with pytest.raises(ValueError):
+        onstep_client.mount.move_dec_axis_deg(20.0)
+    assert onstep_client.active_motion is None
+    assert len(onstep_sim.writes) == writes
+
+
+def test_close_stops_a_move_that_is_still_running(slow_sim):
+    from onstep_mock.testing import runtime_config, wait_for_live_status
+    from onstep_adapter import OnStepClient
+
+    slow_sim.place(ha_h=-2.0, dec_deg=30.0, parked=False)
+    with OnStepClient(config=runtime_config(slow_sim)) as client:
+        wait_for_live_status(client)
+        move = client.mount.go_home()
+        slow_sim.wait_until(lambda m: m.motion == "SLEWING", timeout=3)
+    assert move.done
+    slow_sim.wait_until(lambda m: m.motion == "IDLE", timeout=3)
+    assert not slow_sim.mount.at_home
 
 
 @pytest.mark.parametrize("property_name, element", [

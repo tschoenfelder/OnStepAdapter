@@ -93,17 +93,18 @@ def run(config_path: str, *, goto_timeout_s: float, sync_time_location: bool = F
                         f"pier={current.pier_side} status={current.raw_status}"
                     )
                     confirm(f"Arm finite {axis.upper()} {angle:+.1f}deg move.")
-                    result = client.mount.move_ra_axis_deg(angle) if axis == "ra" else client.mount.move_dec_axis_deg(angle)
+                    move = client.mount.move_ra_axis_deg(angle) if axis == "ra" else client.mount.move_dec_axis_deg(angle)
+                    result = move.wait()
                     print(f"RESULT: {result}")
                     if not result.stop_confirmed:
                         raise RuntimeError("Axis move did not confirm a stop")
                     confirm("Confirm this stage's physical clearance.")
         confirm("All twelve moves passed. Arm explicit HOME -> PARK cleanup.")
-        home = client.go_home()
+        home = client.go_home().wait()
         print(f"HOME return: {home}")
         if not home.confirmed:
             raise RuntimeError("Return HOME was not confirmed")
-        parked = client.park()
+        parked = client.park().wait()
         print(f"PARK result: {parked}")
         if not parked.confirmed or not wait_live(client).parked:
             raise RuntimeError("Final PARK was not confirmed by live status")

@@ -29,14 +29,17 @@ class IndiMount:
 
     @_traced
     def go_home(self):
+        """Start the move to HOME; returns a ``MotionHandle`` at once."""
         return self._client.go_home()
 
     @_traced
     def park(self):
+        """Start the move to the stored PARK; returns a ``MotionHandle`` at once."""
         return self._client.park()
 
     @_traced
     def stop(self):
+        """Stop all motion now, including a running handle's move."""
         return self._client.emergency_stop()
 
     @_traced
@@ -103,7 +106,11 @@ class IndiMount:
         self, offset_deg: float, *, timeout_s: float = 30.0,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
     ):
-        """Finite same-pier RA-axis target; positive increases hour angle."""
+        """Finite same-pier RA-axis target; positive increases hour angle.
+
+        Returns a ``MotionHandle`` at once; ``wait()`` gives the
+        ``IndiAxisMoveResult``.
+        """
         return self._client.move_axis_deg(
             "ra", offset_deg, timeout_s=timeout_s, mode=mode
         )
@@ -113,7 +120,11 @@ class IndiMount:
         self, offset_deg: float, *, timeout_s: float = 30.0,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
     ):
-        """Finite same-pier DEC-axis target; positive is northward."""
+        """Finite same-pier DEC-axis target; positive is northward.
+
+        Returns a ``MotionHandle`` at once; ``wait()`` gives the
+        ``IndiAxisMoveResult``.
+        """
         return self._client.move_axis_deg(
             "dec", offset_deg, timeout_s=timeout_s, mode=mode
         )
