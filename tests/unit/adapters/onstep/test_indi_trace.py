@@ -140,7 +140,7 @@ class ConfigTraceTests(unittest.TestCase):
             example = Path("config.indi.example.toml").read_text(encoding="utf-8")
             config_path.write_text(
                 example.replace(
-                    '# path = "~/.local/state/onstep_adapter/trace-{utc}.jsonl"',
+                    '# path = "~/.local/state/onstep_adapter/trace-{date}.jsonl"',
                     f'path = "{folder}/trace-{{utc}}.jsonl"',
                 ),
                 encoding="utf-8",
@@ -153,6 +153,29 @@ class ConfigTraceTests(unittest.TestCase):
                 self.assertRegex(client.trace.path.name, r"^trace-\d{8}T\d{6}Z\.jsonl$")
             finally:
                 client.trace.close()
+
+    def test_trace_path_with_date_writes_one_file_per_day(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config_path = Path(folder) / "config.toml"
+            example = Path("config.indi.example.toml").read_text(encoding="utf-8")
+            config_path.write_text(
+                example.replace(
+                    '# path = "~/.local/state/onstep_adapter/trace-{date}.jsonl"',
+                    f'path = "{folder}/trace-{{date}}.jsonl"',
+                ),
+                encoding="utf-8",
+            )
+            config = load_indi_config(config_path)
+            for _ in range(2):
+                client = OnStepIndiClient(config=config, transport=IndiTransport())
+                client.trace.record("recv", property="OnStep Status")
+                client.trace.close()
+            files = sorted(Path(folder).glob("trace-*.jsonl"))
+            self.assertEqual(len(files), 1)
+            self.assertRegex(files[0].name, r"^trace-\d{4}-\d{2}-\d{2}\.jsonl$")
+            lines = files[0].read_text(encoding="utf-8").splitlines()
+            self.assertEqual([json.loads(line)["type"] for line in lines],
+                             ["session", "recv", "session", "recv"])
 
     def test_example_config_has_tracing_off(self):
         self.assertIsNone(load_indi_config("config.indi.example.toml").trace_path)

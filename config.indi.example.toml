@@ -38,6 +38,9 @@ max_position = 50000
 
 [trace]
 # Optional transaction trace (JSON Lines) of every INDI write, every received
-# property update and every public mount call. {utc} becomes the start time.
+# property update and every public mount call. {date} becomes the UTC day, so
+# every session of a day goes into one file (a session running past midnight
+# continues in the next day's file); {utc} becomes the start time instead.
 # Compare two traces with: python3 -m onstep_adapter.tools.trace_compare
-# path = "~/.local/state/onstep_adapter/trace-{utc}.jsonl"
+# Condense a log with:     python3 -m onstep_adapter.tools.trace_consolidate
+# path = "~/.local/state/onstep_adapter/trace-{date}.jsonl"

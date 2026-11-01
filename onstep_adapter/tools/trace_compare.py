@@ -78,6 +78,65 @@ def load_trace(path: str | Path) -> list[dict[str, Any]]:
     return records
 
 
+def load_traces(paths: Iterable[str | Path]) -> list[dict[str, Any]]:
+    """Records of several files (e.g. consecutive daily logs), in file order."""
+    records: list[dict[str, Any]] = []
+    for path in paths:
+        records.extend(load_trace(path))
+    return records
+
+
+def split_sessions(records: Iterable[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Split records into sessions.
+
+    A daily log holds every session of that day, each starting with a
+    ``session`` record. A session that ran past midnight continues in the
+    next day's file with a ``continued`` session record carrying the same
+    ``session_id``; loading both files joins it again. Records before the
+    first session record form a session of their own.
+    """
+    sessions: list[list[dict[str, Any]]] = []
+    by_id: dict[str, list[dict[str, Any]]] = {}
+    current: list[dict[str, Any]] | None = None
+    for record in records:
+        if record.get("type") == "session":
+            session_id = record.get("session_id")
+            if session_id and session_id in by_id:
+                current = by_id[session_id]
+                continue  # a continuation: keep one header per session
+            current = []
+            sessions.append(current)
+            if session_id:
+                by_id[session_id] = current
+        elif current is None:
+            current = []
+            sessions.append(current)
+        current.append(record)
+    return [s for s in sessions if s]
+
+
+def select_session(records: list[dict[str, Any]], which: str = "last") -> list[dict[str, Any]]:
+    """One session by 1-based index, ``session_id`` or ``last``."""
+    sessions = split_sessions(records)
+    if not sessions:
+        return []
+    if which == "last":
+        return sessions[-1]
+    if which.isdigit():
+        return sessions[int(which) - 1]
+    for session in sessions:
+        if session[0].get("session_id") == which:
+            return session
+    raise ValueError(f"no session {which!r}")
+
+
+def session_title(session: list[dict[str, Any]], index: int) -> str:
+    head = session[0]
+    label = f" '{head['label']}'" if head.get("label") else ""
+    return (f"session {index} {head.get('session_id', '')}{label} "
+            f"started {head.get('utc', '?')[:19]}Z, {len(session)} records")
+
+
 def _send_label(record: dict[str, Any]) -> str:
     name = record.get("property") or record.get("tag") or "?"
     values = record.get("values") or {}
@@ -291,12 +350,14 @@ def compare(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    summary = commands.add_parser("summary", help="summarize one trace")
-    summary.add_argument("trace")
+    summary = commands.add_parser("summary", help="summarize a trace (every session in it)")
+    summary.add_argument("trace", nargs="+", help="trace file(s); consecutive daily logs are joined")
     summary.add_argument("--json", help="write derived operations as JSON")
     diff = commands.add_parser("diff", help="compare an observed trace with an expected one")
     diff.add_argument("expected")
     diff.add_argument("observed")
+    diff.add_argument("--session", default="last",
+                      help="session to compare in each file: 1-based index, session id or last (default)")
     diff.add_argument("--time-tolerance", type=float, default=0.5,
                       help="relative timing tolerance (default 0.5 = 50%%)")
     diff.add_argument("--time-floor", type=float, default=1.0,
@@ -305,17 +366,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "summary":
-        operations = build_operations(load_trace(args.trace))
-        print(format_summary(operations))
+        sessions = split_sessions(load_traces(args.trace))
+        derived = []
+        for index, session in enumerate(sessions, 1):
+            operations = build_operations(session)
+            derived.append([asdict(op) for op in operations])
+            if len(sessions) > 1:
+                print(f"== {session_title(session, index)}")
+            print(format_summary(operations))
         if args.json:
             Path(args.json).write_text(
-                json.dumps([asdict(op) for op in operations], indent=2), encoding="utf-8"
+                json.dumps(derived[0] if len(derived) == 1 else derived, indent=2), encoding="utf-8"
             )
         return 0
 
     report = compare(
-        build_operations(load_trace(args.expected)),
-        build_operations(load_trace(args.observed)),
+        build_operations(select_session(load_trace(args.expected), args.session)),
+        build_operations(select_session(load_trace(args.observed), args.session)),
         time_tolerance=args.time_tolerance, time_floor_s=args.time_floor,
     )
     for line in report["mismatches"]:

@@ -28,12 +28,15 @@ import json
 from pathlib import Path
 import threading
 import time
+import uuid
 from typing import IO, Any, Callable
 import xml.etree.ElementTree as ET
 
 from .indi_gu import decode_gu
 
 TRACE_FORMAT_VERSION = 1
+# In a trace path, replaced by the UTC day (YYYY-MM-DD): one file per day.
+DAY_PLACEHOLDER = "{date}"
 
 
 def _jsonable(value: Any) -> Any:
@@ -69,6 +72,24 @@ def _parse_vector(xml: str) -> dict[str, Any]:
     }
 
 
+GU_SUMMARY_FIELDS = (
+    "motion_state", "parked", "tracking", "slewing",
+    "at_home", "guiding", "at_limit", "pier_side",
+)
+
+
+def gu_summary(name: str | None, values: dict[str, str]) -> dict[str, Any] | None:
+    """Decoded ``:GU#`` fields of an ``OnStep Status`` update, else None."""
+    raw = values.get(":GU# return") if name == "OnStep Status" else None
+    if not raw:
+        return None
+    try:
+        decoded = decode_gu(raw)
+    except ValueError:
+        return None
+    return {key: decoded[key] for key in GU_SUMMARY_FIELDS}
+
+
 class TraceRecorder:
     """Thread-safe JSON Lines recorder shared by transport and mount facade."""
 
@@ -80,10 +101,21 @@ class TraceRecorder:
         label: str = "",
         include_raw_xml: bool = False,
     ) -> None:
-        if isinstance(target, (str, Path)):
+        self._template: str | None = None
+        self._day: str | None = None
+        if isinstance(target, (str, Path)) and DAY_PLACEHOLDER in str(target):
+            # One file per UTC day; a session crossing midnight continues in
+            # the next day's file with a ``continued`` session record.
+            # The file is opened with the first record after the session
+            # record, so an imported recording lands in the day it was made.
+            self._template = str(Path(target).expanduser())
+            self._stream: IO[str] | None = None
+            self._owns_stream = True
+            self.path = None
+        elif isinstance(target, (str, Path)):
             path = Path(target).expanduser()
             path.parent.mkdir(parents=True, exist_ok=True)
-            self._stream: IO[str] = path.open("a", encoding="utf-8")
+            self._stream = path.open("a", encoding="utf-8")
             self._owns_stream = True
             self.path: Path | None = path
         else:
@@ -94,31 +126,83 @@ class TraceRecorder:
         self.label = label
         self.include_raw_xml = include_raw_xml
         self.write_failures = 0
+        self.session_id = uuid.uuid4().hex[:12]
         self._lock = threading.Lock()
         self._seq = 0
         self._call_id = 0
         self._start = time.monotonic()
+        self.started_at = self._start
         self._closed = False
-        from . import __version__
-        self.record(
-            "session", format=TRACE_FORMAT_VERSION, source=source, label=label,
-            adapter_version=__version__,
-        )
+        self.record("session", **self._session_fields())
 
-    def record(self, record_type: str, **fields: Any) -> None:
+    def _session_fields(self) -> dict[str, Any]:
+        from . import __version__
+        return {
+            "format": TRACE_FORMAT_VERSION, "source": self.source, "label": self.label,
+            "adapter_version": __version__, "session_id": self.session_id,
+        }
+
+    def _open_day(self, day: str) -> IO[str]:
+        path = Path(self._template.replace(DAY_PLACEHOLDER, day))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        return path.open("a", encoding="utf-8")
+
+    def _open_first(self, day: str) -> None:
+        self._day = day
+        self._stream = self._open_day(day)
+        header = getattr(self, "_header", None)
+        if header is not None:
+            self._stream.write(json.dumps(header, separators=(",", ":")) + "\n")
+            self._header = None
+
+    def _rotate(self, day: str, header: dict[str, Any]) -> None:
+        """Switch to ``day``'s file and repeat the session record there."""
+        if self._stream is not None:
+            try:
+                self._stream.close()
+            except Exception:
+                self.write_failures += 1
+        self._day = day
+        self._stream = self._open_day(day)
+        line = {key: header[key] for key in ("seq", "t", "utc", "thread")}
+        line.update(type="session", **self._session_fields(), continued=True)
+        self._stream.write(json.dumps(line, separators=(",", ":")) + "\n")
+
+    def record(
+        self, record_type: str, *, at: float | None = None,
+        at_utc: datetime | None = None, **fields: Any,
+    ) -> None:
+        """Write one record.
+
+        ``at`` (a ``time.monotonic()`` value) and ``at_utc`` override the
+        record's timestamps; a passive capture uses them to stamp a record
+        with the moment its bytes arrived rather than when it was decoded.
+        """
         with self._lock:
             if self._closed:
                 return
             self._seq += 1
             line = {
                 "seq": self._seq,
-                "t": round(time.monotonic() - self._start, 6),
-                "utc": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                "t": round((time.monotonic() if at is None else at) - self._start, 6),
+                "utc": (at_utc or datetime.now(timezone.utc)).isoformat(timespec="microseconds"),
                 "thread": threading.current_thread().name,
                 "type": record_type,
             }
             line.update(_jsonable(fields))
             try:
+                if self._template is not None:
+                    if self._stream is None and record_type == "session":
+                        self._header = line  # written with the first record
+                        return
+                    if self._stream is None:
+                        self._open_first(line["utc"][:10])
+                    day = line["utc"][:10]
+                    if day != self._day:
+                        self._rotate(day, line)
+                        self._seq += 1
+                        line["seq"] = self._seq
                 self._stream.write(json.dumps(line, separators=(",", ":")) + "\n")
                 self._stream.flush()
             except Exception:  # tracing must never break mount control
@@ -143,19 +227,9 @@ class TraceRecorder:
             "tag": tag, "device": device, "property": name, "kind": kind,
             "state": state, "changed": changed, "values": values, "revision": revision,
         }
-        raw = values.get(":GU# return") if name == "OnStep Status" else None
-        if raw:
-            try:
-                decoded = decode_gu(raw)
-            except ValueError:
-                decoded = None
-            if decoded is not None:
-                fields["gu"] = {
-                    key: decoded[key] for key in (
-                        "motion_state", "parked", "tracking", "slewing",
-                        "at_home", "guiding", "at_limit", "pier_side",
-                    )
-                }
+        gu = gu_summary(name, values)
+        if gu is not None:
+            fields["gu"] = gu
         self.record("recv", **fields)
 
     def close(self) -> None:
@@ -163,7 +237,12 @@ class TraceRecorder:
             if self._closed:
                 return
             self._closed = True
-            if self._owns_stream:
+            if self._template is not None and self._stream is None:
+                try:  # a session without records still leaves its header
+                    self._open_first(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+                except Exception:
+                    self.write_failures += 1
+            if self._owns_stream and self._stream is not None:
                 try:
                     self._stream.close()
                 except Exception:
