@@ -26,6 +26,7 @@ import statistics
 from typing import Any, Iterable
 
 from ..indi_gu import local_sidereal_hours
+from ..tools.trace_compare import split_sessions
 from .stream import forbidden_indi
 
 SIDEREAL_RATE = 1.00273790935
@@ -58,6 +59,12 @@ class CaptureView:
     """
 
     def __init__(self, records: Iterable[dict[str, Any]]) -> None:
+        records = list(records)
+        if len(split_sessions(records)) > 1:
+            raise ValueError("records hold several sessions (a daily log?); "
+                             "analyze each one from trace_compare.split_sessions()")
+        if any("repeat" in r for r in records):
+            raise ValueError("a consolidated log cannot be analyzed; use the raw log it was made from")
         self.records = sorted(records, key=lambda r: (float(r.get("t", 0.0)), r.get("seq", 0)))
         counts: dict[Any, int] = {}
         for r in self.records:

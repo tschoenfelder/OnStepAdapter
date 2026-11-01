@@ -16,6 +16,13 @@ replay skips it.
 
 ## 1. Record
 
+Logs are stored by day: an output path containing `{date}` (the default,
+`capture-{date}.jsonl`) gets the UTC day, so every capture of a day is
+appended to one file, each as its own session. A session that runs past
+midnight continues in the next day's file under the same session id; give
+both files to a command and it is joined again. The adapter's own trace
+(`[trace] path = ".../trace-{date}.jsonl"`) is stored the same way.
+
 Run the capture on the Raspberry that runs `indiserver`, then drive the
 mount the way you normally do (your application or the smoke tools). Start
 the capture **before** the client connects, so the property definitions are
@@ -26,7 +33,8 @@ recorded too.
 ```bash
 sudo tcpdump -i lo -s 0 -U -w ~/onstep-$(date -u +%Y%m%dT%H%M%SZ).pcap 'tcp port 7624'
 # ... run the session, then Ctrl+C
-python3 -m onstep_adapter.tools.indi_capture from-pcap ~/onstep-*.pcap -o capture.jsonl
+python3 -m onstep_adapter.tools.indi_capture from-pcap ~/onstep-*.pcap \
+    -o ~/onstep-captures/capture-{date}.jsonl
 ```
 
 If OnStepX is reached over its TCP command port (WiFi or Ethernet, port
@@ -45,7 +53,8 @@ except `A02`.
 
 ```bash
 python3 -m onstep_adapter.tools.indi_capture proxy --listen 127.0.0.1:7625 \
-    --upstream 127.0.0.1:7624 -o capture.jsonl --label "field test 2026-11-02"
+    --upstream 127.0.0.1:7624 -o ~/onstep-captures/capture-{date}.jsonl \
+    --label "field test"
 ```
 
 Point the client at port 7625 instead of 7624 (for the adapter, `port = 7625`
@@ -78,8 +87,9 @@ python3 -m onstep_adapter.tools.indi_capture summary capture.jsonl     # operati
 python3 -m onstep_adapter.tools.indi_capture calibrate capture.jsonl   # SimConfig values
 ```
 
-`check` needs no mock. Exit status 1 means the recorded mount contradicted an
-assumption.
+Each command takes one or more files (for example two consecutive days) and
+handles every session in them separately. `check` needs no mock. Exit status
+1 means the recorded mount contradicted an assumption.
 
 | ID | Assumption | Source |
 | --- | --- | --- |
@@ -126,7 +136,30 @@ separates behavioral differences from differences in speed and timing.
 `--speed 5` replays five times faster (times are scaled back before they are
 compared; latencies that do not scale are then left out).
 
-## 4. Turn a recording into an acceptance test
+## 4. Consolidate a log for reading
+
+```bash
+python3 -m onstep_adapter.tools.trace_consolidate capture-2026-11-02.jsonl --text
+```
+
+A stationary mount repeats the same status several times a second. The
+consolidated log (`capture-2026-11-02.consolidated.jsonl`, plus a readable
+`.consolidated.txt` with `--text`) writes each run of identical consecutive
+entries of one property as its first entry with `repeat`, `t_end`, `utc_end`
+and `duration_s`, for example:
+
+```text
+21:40:44.911-21:40:45.657     0.75 s x4     c1 recv    OnStep Status [Ok] :GU# return=nNpEW060 Error=None
+```
+
+Entries of other properties in between do not end a run; a client write, a
+public adapter call or a new session ends every run. `--tolerance 0.001`
+also merges entries whose numbers drift (coordinates with tracking OFF) and
+keeps the last values as `values_end`. The raw log stays untouched: `check`,
+`validate` and `trace_compare` refuse a consolidated log, because update
+rates and timings are what they measure. Works on adapter traces too.
+
+## 5. Turn a recording into an acceptance test
 
 Copy the capture into `tests/acceptance/recordings/` with a descriptive name.
 `tests/acceptance/test_recorded_behavior.py` replays every recording there

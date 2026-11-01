@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
 
-from ..indi_trace import TraceRecorder, gu_summary
+from ..indi_trace import DAY_PLACEHOLDER, TraceRecorder, gu_summary
 
 CAPTURE_SOURCE = "capture"
 
@@ -231,10 +231,11 @@ class CaptureWriter:
 def open_capture(target, *, label: str = "", source: str = CAPTURE_SOURCE) -> CaptureWriter:
     """A writer for a new capture file (path) or stream.
 
-    A capture file holds exactly one session, so an existing file is never
-    appended to.
+    A path containing ``{date}`` is a daily log: one file per UTC day that
+    every capture of that day is appended to, each as its own session. Any
+    other existing file is never appended to.
     """
-    if isinstance(target, (str, Path)):
+    if isinstance(target, (str, Path)) and DAY_PLACEHOLDER not in str(target):
         path = Path(target).expanduser()
         if path.exists() and path.stat().st_size:
             raise FileExistsError(f"{path} exists; a capture is never appended to")

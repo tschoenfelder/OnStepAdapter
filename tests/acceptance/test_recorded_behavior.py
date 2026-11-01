@@ -17,18 +17,24 @@ from pathlib import Path
 import pytest
 
 from onstep_adapter.capture.analysis import CaptureView, FAIL, PASS, check_assumptions
-from onstep_adapter.tools.trace_compare import load_trace
+from onstep_adapter.tools.trace_compare import load_trace, split_sessions
 from onstep_mock.validate import format_report, validate
 
-RECORDINGS = sorted((Path(__file__).parent / "recordings").glob("*.jsonl"))
+RECORDINGS = sorted(
+    p for p in (Path(__file__).parent / "recordings").glob("*.jsonl")
+    if not p.name.endswith(".consolidated.jsonl")
+)
+# A daily log holds several sessions; each one is a case.
+CASES = [(path, index) for path in RECORDINGS for index in range(len(split_sessions(load_trace(path))))]
 SPEED = float(os.environ.get("ONSTEP_REPLAY_SPEED", "5"))
 SEED = Path(__file__).parent / "recordings" / "mock-seed-unpark-axis-abort-home-park.jsonl"
 
 
-@pytest.mark.parametrize("recording", RECORDINGS, ids=[p.stem for p in RECORDINGS])
-def test_mock_reproduces_recorded_mount(recording):
-    validation = validate(load_trace(recording), speed=SPEED)
-    assert validation.ok, format_report(validation, f"Validation of {recording.name}")
+@pytest.mark.parametrize("recording,session", CASES, ids=[f"{p.stem}-{i + 1}" for p, i in CASES])
+def test_mock_reproduces_recorded_mount(recording, session):
+    records = split_sessions(load_trace(recording))[session]
+    validation = validate(records, speed=SPEED)
+    assert validation.ok, format_report(validation, f"Validation of {recording.name}, session {session + 1}")
 
 
 def test_seed_recording_exercises_the_core_assumptions():

@@ -1,6 +1,8 @@
 """Validate the mock against a capture of the real mount.
 
-    python3 -m onstep_mock.validate capture.jsonl --report report.md
+    python3 -m onstep_mock.validate capture-2026-11-02.jsonl --report report.md
+
+A daily log holds several sessions; each is validated on its own.
 
 1. checks the capture against every documented assumption
    (``onstep_adapter.capture.analysis``);
@@ -29,7 +31,9 @@ from onstep_adapter.capture.analysis import (
     FAIL, NOT_OBSERVED, PASS, CaptureView, Finding, calibrate, check_assumptions,
     property_inventory, segment_operations,
 )
-from onstep_adapter.tools.trace_compare import build_operations, compare, load_trace
+from onstep_adapter.tools.trace_compare import (
+    build_operations, compare, load_traces, select_session, session_title, split_sessions,
+)
 
 from .mount import Pose, SimConfig
 from .replay import ReplayResult, replay_capture
@@ -177,7 +181,9 @@ def format_report(v: Validation, title: str = "OnStepX capture validation") -> s
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("capture", help="capture file (JSON Lines) from indi_capture")
+    parser.add_argument("capture", nargs="+", help="capture file(s) (JSON Lines); consecutive daily logs are joined")
+    parser.add_argument("--session", default="all",
+                        help="session to validate: 1-based index, session id, last, or all (default)")
     parser.add_argument("--speed", type=float, default=1.0, help="mock speed factor for the replay (default 1)")
     parser.add_argument("--calibrated", action="store_true",
                         help="configure the mock with the values measured in the capture")
@@ -185,23 +191,36 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", help="write findings and differences as JSON")
     parser.add_argument("--save-replay", help="write the mock's capture (JSON Lines) to this file")
     args = parser.parse_args(argv)
-    validation = validate(load_trace(args.capture), speed=args.speed, calibrated=args.calibrated)
-    report = format_report(validation, f"Validation of {Path(args.capture).name}")
+    records = load_traces(args.capture)
+    sessions = split_sessions(records) if args.session == "all" else [select_session(records, args.session)]
+    name = ", ".join(Path(c).name for c in args.capture)
+    reports, results, replays, ok = [], [], [], True
+    for index, session in enumerate(sessions, 1):
+        validation = validate(session, speed=args.speed, calibrated=args.calibrated)
+        title = f"Validation of {name}"
+        if len(sessions) > 1:
+            title += f", {session_title(session, index)}"
+        reports.append(format_report(validation, title))
+        ok &= validation.ok
+        results.append({
+            "session": session[0].get("session_id"), "ok": validation.ok,
+            "real": [asdict(f) for f in validation.real], "mock": [asdict(f) for f in validation.mock],
+            "differences": validation.differences, "inventory": validation.inventory,
+            "calibration": validation.calibration,
+        })
+        replays.extend(validation.replay.records)
+    report = "\n".join(reports)
     print(report)
     if args.report:
         Path(args.report).write_text(report, encoding="utf-8")
     if args.json:
-        Path(args.json).write_text(json.dumps({
-            "ok": validation.ok, "real": [asdict(f) for f in validation.real],
-            "mock": [asdict(f) for f in validation.mock], "differences": validation.differences,
-            "inventory": validation.inventory, "calibration": validation.calibration,
-        }, indent=2, default=str), encoding="utf-8")
+        Path(args.json).write_text(json.dumps(results[0] if len(results) == 1 else results,
+                                              indent=2, default=str), encoding="utf-8")
     if args.save_replay:
         with Path(args.save_replay).open("w", encoding="utf-8") as stream:
-            for record in validation.replay.records:
+            for record in replays:
                 stream.write(json.dumps(record, separators=(",", ":")) + "\n")
-    return 0 if validation.ok else 1
-
+    return 0 if ok else 1
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -22,7 +22,6 @@ Then look at it:
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
@@ -31,7 +30,7 @@ from ..capture.analysis import FAIL, calibrate, check_assumptions, segment_opera
 from ..capture.pcap import import_pcap
 from ..capture.proxy import CaptureProxy
 from ..capture.stream import open_capture
-from .trace_compare import build_operations, format_summary, load_trace
+from .trace_compare import build_operations, format_summary, load_traces, session_title, split_sessions
 
 
 def _endpoint(text: str, default_host: str = "127.0.0.1") -> tuple[str, int]:
@@ -39,8 +38,7 @@ def _endpoint(text: str, default_host: str = "127.0.0.1") -> tuple[str, int]:
     return (host or default_host, int(port))
 
 
-def _default_out() -> str:
-    return f"capture-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.jsonl"
+DEFAULT_OUT = "capture-{date}.jsonl"  # one file per UTC day
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -52,30 +50,32 @@ def main(argv: list[str] | None = None) -> int:
     proxy.add_argument("--upstream", default="127.0.0.1:7624", help="indiserver host:port (default 127.0.0.1:7624)")
     proxy.add_argument("--protocol", choices=("indi", "lx200"), default="indi",
                        help="indi between client and indiserver; lx200 between the driver and OnStepX over TCP")
-    proxy.add_argument("-o", "--out", default=None, help="capture file (default capture-<utc>.jsonl)")
+    proxy.add_argument("-o", "--out", default=DEFAULT_OUT,
+                       help="capture file; {date} becomes the UTC day, giving one file per day "
+                            "that each capture appends to (default capture-{date}.jsonl)")
     proxy.add_argument("--label", default="", help="free text stored in the capture, e.g. the test step")
 
     pcap = commands.add_parser("from-pcap", help="convert a tcpdump recording")
     pcap.add_argument("pcap")
-    pcap.add_argument("-o", "--out", default=None)
+    pcap.add_argument("-o", "--out", default=DEFAULT_OUT, help="as for proxy; days follow the packet times")
     pcap.add_argument("--indi-port", type=int, default=7624)
     pcap.add_argument("--lx200-port", type=int, default=9999, help="OnStepX TCP command port; 0 to ignore")
     pcap.add_argument("--label", default="")
 
     check = commands.add_parser("check", help="check a capture against the documented assumptions")
-    check.add_argument("capture")
+    check.add_argument("capture", nargs="+", help="capture file(s); consecutive daily logs are joined")
     check.add_argument("--json", help="write the findings as JSON")
 
     summary = commands.add_parser("summary", help="list the operations in a capture")
-    summary.add_argument("capture")
+    summary.add_argument("capture", nargs="+")
 
     cal = commands.add_parser("calibrate", help="print SimConfig values measured in a capture")
-    cal.add_argument("capture")
+    cal.add_argument("capture", nargs="+")
 
     args = parser.parse_args(argv)
 
     if args.command == "proxy":
-        out = args.out or _default_out()
+        out = args.out
         writer = open_capture(out, label=args.label)
         listen = _endpoint(args.listen)
         server = CaptureProxy(writer, upstream=_endpoint(args.upstream), listen=listen, protocol=args.protocol)
@@ -88,28 +88,35 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "from-pcap":
-        out = args.out or _default_out()
+        out = args.out
         writer = open_capture(out, label=args.label)
         counts = import_pcap(args.pcap, writer, indi_port=args.indi_port, lx200_port=args.lx200_port or None)
         print(f"{out}: {counts['connections']} connection(s), {counts['segments']} segments, "
               f"{counts['bytes']} bytes, {counts['retransmitted']} retransmitted bytes dropped")
         return 0
 
-    records = load_trace(args.capture)
-    if args.command == "summary":
-        print(format_summary(build_operations(segment_operations(records))))
-        return 0
-    if args.command == "calibrate":
-        print(json.dumps(calibrate(records), indent=2, default=str))
-        return 0
-    findings = check_assumptions(records)
-    width = max(len(f.title) for f in findings)
-    for f in findings:
-        print(f"{f.id} {f.status:<12} {f.title:<{width}}  {f.observed}")
-    if args.json:
-        Path(args.json).write_text(json.dumps([f.__dict__ for f in findings], indent=2, default=str), encoding="utf-8")
-    return 1 if any(f.status == FAIL for f in findings) else 0
-
+    sessions = split_sessions(load_traces(args.capture))
+    failed = False
+    findings_out = []
+    for index, records in enumerate(sessions, 1):
+        if len(sessions) > 1:
+            print(f"== {session_title(records, index)}")
+        if args.command == "summary":
+            print(format_summary(build_operations(segment_operations(records))))
+            continue
+        if args.command == "calibrate":
+            print(json.dumps(calibrate(records), indent=2, default=str))
+            continue
+        findings = check_assumptions(records)
+        width = max(len(f.title) for f in findings)
+        for f in findings:
+            print(f"{f.id} {f.status:<12} {f.title:<{width}}  {f.observed}")
+        failed |= any(f.status == FAIL for f in findings)
+        findings_out.append({"session": records[0].get("session_id"),
+                             "findings": [f.__dict__ for f in findings]})
+    if args.command == "check" and args.json:
+        Path(args.json).write_text(json.dumps(findings_out, indent=2, default=str), encoding="utf-8")
+    return 1 if failed else 0
 
 if __name__ == "__main__":
     sys.exit(main())

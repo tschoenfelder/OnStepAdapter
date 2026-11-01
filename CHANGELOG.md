@@ -13,6 +13,14 @@
   and report where the mock differs from the recorded mount, with measured
   `SimConfig` values. Recordings in `tests/acceptance/recordings/` are
   acceptance tests. See `docs/CAPTURE.md`.
+- Store logs by day: a capture or trace path containing `{date}` writes one
+  file per UTC day that each session appends to; a session crossing midnight
+  continues in the next file under the same `session_id`. Every session
+  record now carries a `session_id`. `trace_compare`, `indi_capture` and
+  `onstep_mock.validate` accept several files and handle each session.
+- Add `python3 -m onstep_adapter.tools.trace_consolidate`, which writes a
+  condensed copy of a log where each run of repeated entries is one entry
+  with `repeat`, `t_end` and `duration_s` (`--text` for a readable listing).
 
 - **Breaking:** `park()`, `go_home()`, `move_ra_axis_deg()`,
   `move_dec_axis_deg()`, `move_ra()` and `move_dec()` no longer block. They
