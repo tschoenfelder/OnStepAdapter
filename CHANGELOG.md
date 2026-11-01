@@ -9,6 +9,11 @@
   can never interrupt a command.
 - Add `python3 -m onstep_adapter.tools.trace_compare` to summarize a trace or
   compare an observed run with an expected one, operation by operation.
+- Add `onstep_mock`, a virtual OnStepX mount behind a local INDI server, for
+  testing applications against the unchanged adapter. Slews take real time
+  (with a speed factor), STOP works at any moment, UNPARK auto-tracks like
+  OnStepX, HOME and PARK are fixed, and SET HOME, SET PARK and SYNC are
+  rejected and logged. Tests inspect `server.mount` and `server.writes`.
 
 ## 0.6.2 - 2026-10-20
 

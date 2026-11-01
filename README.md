@@ -212,7 +212,7 @@ The supervised [axis-angle procedure](docs/SDK.md#ra-and-dec-axis-angle-test)
 tests paired +1/-1, +5/-5 and +10/-10 degree movements on both axes before
 0.4.0 is considered complete. It requires line of sight.
 
-See the [SDK guide](docs/SDK.md), [requirements](docs/REQUIREMENTS.md),
+See the [SDK guide](docs/SDK.md), [OnStepX mock](docs/MOCK.md), [requirements](docs/REQUIREMENTS.md),
 [INDI architecture](docs/INDI_ARCHITECTURE.md), and
 [hardware inventory](docs/INDI_RASPBERRY_INVENTORY.md). The previous
 [0.3.5 release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.5)
