@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from .indi_config import IndiRuntimeConfig
@@ -22,6 +23,7 @@ from .indi_mount import IndiMount
 from .indi_status import IndiMountSnapshot, IndiStatusReader
 from .indi_stop import IndiStopResult, stop_mount_via_indi
 from .indi_tracking import IndiTrackingResult, enable_tracking_via_indi
+from .indi_trace import TraceRecorder, as_recorder, traced_operation
 from .indi_transport import IndiTransport
 from .indi_gu import decode_gu
 from .meridian_policy import MeridianPolicy, derive_meridian_policy
@@ -30,6 +32,9 @@ TIME_SITE_SYNC_WARNING = (
     "Changing OnStep time or location while another client is tracking or "
     "slewing may change pointing and invalidate that client's safety calculations."
 )
+
+
+_traced = traced_operation(lambda client: client.trace)
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,7 @@ class OnStepIndiClient:
         clock: Callable[[], datetime] | None = None,
         auto_supervise: bool = True,
         guide_calibration: IndiGuideCalibration | None = None,
+        trace: TraceRecorder | str | Path | None = None,
     ) -> None:
         self.device = config.device if config is not None else device
         self.safe_meridian_flip_via_home = (
@@ -76,10 +82,17 @@ class OnStepIndiClient:
             else safe_meridian_flip_via_home
         )
         self._config = config
+        if trace is None and config is not None and config.trace_path:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            trace = config.trace_path.replace("{utc}", stamp)
+        self._owns_trace = trace is not None and not isinstance(trace, TraceRecorder)
+        self.trace = as_recorder(trace, source="real")
         self._transport = transport or IndiTransport(
             host=config.host if config is not None else host,
             port=config.port if config is not None else port,
         )
+        if self.trace is not None:
+            self._transport.trace = self.trace
         self._clock = clock or (lambda: datetime.now().astimezone())
         self._auto_supervise = auto_supervise
         self._guide_calibration = guide_calibration
@@ -133,6 +146,7 @@ class OnStepIndiClient:
             self._session_time_site_accepted = False
         return self._session_time_site_accepted
 
+    @_traced
     def connect(self, *, timeout: float = 5.0) -> IndiStartupStatus:
         if self._transport.is_open and self._policy is not None:
             raise RuntimeError("INDI client is already connected; close before reconnecting")
@@ -346,6 +360,7 @@ class OnStepIndiClient:
                 "INDI HOME/PARK motion is disabled pending the supervised H-status check"
             )
 
+    @_traced
     def sync_time_location(
         self, *, user_approved: bool, timeout: float = 5.0
     ) -> IndiSyncResult:
@@ -431,4 +446,8 @@ class OnStepIndiClient:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
+        try:
+            self.close()
+        finally:
+            if self._owns_trace and self.trace is not None:
+                self.trace.close()
