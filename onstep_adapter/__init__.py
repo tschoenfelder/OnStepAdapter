@@ -14,6 +14,7 @@ from .indi_guiding import (
 )
 from .indi_home import IndiHomeRouteResult, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState
+from .indi_motion import MotionHandle, MotionProgress, MotionStopped
 from .indi_mount import IndiMount
 from .indi_status import IndiMountSnapshot
 from .indi_stop import IndiStopResult
@@ -44,6 +45,9 @@ __all__ = [
     "IndiTrackingResult",
     "IndiUnparkResult",
     "MeridianPolicy",
+    "MotionHandle",
+    "MotionProgress",
+    "MotionStopped",
     "GUIDE_CHUNK_MS",
     "MAX_GUIDE_PULSE_MS",
     "MIN_GUIDE_PULSE_MS",

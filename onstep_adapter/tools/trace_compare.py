@@ -18,6 +18,9 @@ that caused it. For each operation the tool derives:
 * timings relative to the call: duration, first write, motion start, motion end;
 * how long tracking was on inside the operation;
 * the outcome (return or error type) and the boolean fields of the result;
+  for a movement that returns a ``MotionHandle`` the outcome is the move's
+  end state (``motion:succeeded``, ``motion:stopped``, ...) and the result
+  and duration come from its ``motion_end`` record;
 * the final motion state, pier side and coordinates.
 
 ``diff`` pairs operations by position and reports every behavioral mismatch.
@@ -99,6 +102,14 @@ def _float(value: Any) -> float | None:
         return None
 
 
+def _result_flags(result: Any) -> dict[str, bool]:
+    if isinstance(result, dict):
+        return {key: value for key, value in result.items() if isinstance(value, bool)}
+    if isinstance(result, bool):
+        return {"value": result}
+    return {}
+
+
 def build_operations(records: Iterable[dict[str, Any]]) -> list[Operation]:
     """Split a trace into top-level operations and derive their behavior."""
     operations: list[Operation] = []
@@ -109,6 +120,7 @@ def build_operations(records: Iterable[dict[str, Any]]) -> list[Operation]:
     pier: str | None = None
     ra = dec = None
     tracking_since: float | None = None
+    motion_op: Operation | None = None
 
     def close_tracking(op: Operation | None, at: float) -> None:
         nonlocal tracking_since
@@ -147,16 +159,22 @@ def build_operations(records: Iterable[dict[str, Any]]) -> list[Operation]:
                 current.duration_s = _float(record.get("duration_s"))
                 if kind == "error":
                     current.outcome = f"error:{record.get('error_type', '?')}"
-                else:
+                elif current is not motion_op:
                     current.outcome = "return"
-                    result = record.get("result")
-                    if isinstance(result, dict):
-                        current.result_flags = {
-                            key: value for key, value in result.items()
-                            if isinstance(value, bool)
-                        }
-                    elif isinstance(result, bool):
-                        current.result_flags = {"value": result}
+                    current.result_flags = _result_flags(record.get("result"))
+            continue
+        if kind == "motion_start":
+            motion_op = current
+            continue
+        if kind == "motion_end":
+            # A movement returns a handle at once; its outcome, result and
+            # duration arrive later from the motion thread and belong to the
+            # call that started it, even if another call came in between.
+            if motion_op is not None:
+                motion_op.outcome = f"motion:{record.get('state', '?')}"
+                motion_op.duration_s = _float(record.get("duration_s"))
+                motion_op.result_flags = _result_flags(record.get("result"))
+            motion_op = None
             continue
         if kind == "send" and current is not None:
             current.sends.append(_send_label(record))

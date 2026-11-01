@@ -164,7 +164,10 @@ after each leg. It did not certify the entire physical focuser travel.
 `unpark()` leaves PARKED without a HOME slew. `park()` moves directly to the
 stored PARK position and does not require or silently route through HOME. A
 repeated `park()` is idempotent when fresh raw OnStep status already proves
-the requested state. These mechanical operations remain disabled by
+the requested state. `park()`, `go_home()` and the axis moves return a
+`MotionHandle` at once (`progress()`, `wait()`, `stop()`), so the calling
+thread can always stop the move; see `docs/SDK.md`. These mechanical
+operations remain disabled by
 the example configuration until their supervised acceptance is complete.
 General `goto()` remains unavailable.
 

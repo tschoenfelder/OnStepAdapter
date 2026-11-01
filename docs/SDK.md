@@ -186,6 +186,43 @@ checks remain unchanged because correction execution delegates directly to
 `guide_pulse()`. The calling guider must acquire a fresh frame afterward and
 decide whether another correction is necessary.
 
+## Movements Return A Handle
+
+`mount.park()`, `mount.go_home()`, `mount.move_ra_axis_deg()`,
+`mount.move_dec_axis_deg()` and the arcsecond aliases `move_ra()` /
+`move_dec()` never wait for the mount. Each one checks its arguments, sends
+nothing that blocks, and returns a `MotionHandle` at once while a worker
+thread drives the move. The caller's own thread is therefore always free to
+stop it:
+
+```python
+move = client.mount.go_home()
+while not move.done:
+    progress = move.progress()   # kind, state, stage, elapsed_s, fraction, last_raw_status
+    if operator_pressed_stop():
+        move.stop()              # ABORT + tracking off, then verified stop
+        break
+    time.sleep(0.1)
+result = move.wait()             # IndiPositionResult / IndiAxisMoveResult
+```
+
+- `stop(timeout=5.0)` sends ABORT and tracking off before it waits for
+  anything and returns the verified `IndiStopResult`. `mount.stop()` and the
+  meridian supervisor stop a running handle's move in the same way.
+- `progress()` never blocks. `state` is `running`, `succeeded`, `failed` or
+  `stopped`; `fraction` is 0..1 for axis moves and `None` for PARK and HOME.
+- `wait(timeout=None)` blocks only the caller. It returns the move's result,
+  raises `MotionStopped` (with `.stop_result`) when the move was stopped,
+  re-raises the error an axis move ended with, and raises `TimeoutError` if
+  the move is still running after `timeout` (the move carries on).
+- Only one move runs at a time. Starting another move, `unpark()` or
+  `route_park_to_home()` while one is active raises `RuntimeError`.
+- `close()` stops a move that is still running.
+
+A stop request is seen by the worker within 0.1 s. `unpark()` still returns
+its result directly: it does not slew, and it switches off OnStepX's resumed
+tracking before returning.
+
 ## RA And DEC Axis-Angle Test
 
 `mount.move_ra_axis_deg(angle)` and `mount.move_dec_axis_deg(angle)` issue a

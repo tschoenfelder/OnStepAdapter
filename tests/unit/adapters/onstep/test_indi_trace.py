@@ -191,6 +191,24 @@ def go_home_trace(slew_seconds, *, tracking_after=False):
 
 
 class TraceCompareTests(unittest.TestCase):
+    def test_handle_move_takes_outcome_from_its_motion_end_record(self):
+        records = [
+            rec(1, 0.0, "session"),
+            rec(2, 0.5, "call", call_id=1, op="go_home", args=[], kwargs={}),
+            rec(3, 0.51, "motion_start", kind="home"),
+            rec(4, 0.52, "return", call_id=1, op="go_home", duration_s=0.02,
+                result="MotionHandle(kind='home', state='running')"),
+            rec(5, 1.5, "call", call_id=2, op="stop", args=[], kwargs={}),
+            rec(6, 1.6, "motion_end", kind="home", state="stopped", duration_s=1.09,
+                error="home move was stopped before it finished", result=None),
+            rec(7, 2.0, "return", call_id=2, op="stop", duration_s=0.5,
+                result={"stopped_confirmed": True}),
+        ]
+        home, stop = trace_compare.build_operations(records)
+        self.assertEqual((home.outcome, home.duration_s), ("motion:stopped", 1.09))
+        self.assertEqual(stop.outcome, "return")
+        self.assertEqual(stop.result_flags, {"stopped_confirmed": True})
+
     def test_operations_capture_writes_states_and_timing(self):
         home, stop = trace_compare.build_operations(go_home_trace(4.0))
         self.assertEqual(home.op, "go_home")

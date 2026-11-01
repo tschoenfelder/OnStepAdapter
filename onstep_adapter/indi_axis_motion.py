@@ -9,6 +9,7 @@ import threading
 import time
 from typing import Callable, Literal
 
+from .indi_motion import NO_STOP, MotionStopped, MotionToken
 from .indi_status import IndiMountSnapshot
 from .indi_transport import IndiTransport
 
@@ -129,11 +130,13 @@ class IndiAxisMover:
         )
         return math.degrees(math.asin(max(-1.0, min(1.0, sin_altitude))))
 
-    def move(
-        self, axis: Axis, offset_deg: float, *, timeout_s: float = 30.0,
+    @staticmethod
+    def validate_request(
+        axis: Axis, offset_deg: float, *, timeout_s: float = 30.0,
         poll_s: float = 0.1,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
-    ) -> IndiAxisMoveResult:
+    ) -> AxisMotionMode:
+        """Reject a malformed request before any motion thread is started."""
         try:
             requested_mode = AxisMotionMode(mode)
         except ValueError as exc:
@@ -155,10 +158,28 @@ class IndiAxisMover:
             raise ValueError("Axis move timeout must be between 1 and 60 seconds")
         if not math.isfinite(poll_s) or not 0.05 <= poll_s <= 0.25:
             raise ValueError("Axis move poll interval must be 0.05..0.25 seconds")
+        return requested_mode
+
+    def move(
+        self, axis: Axis, offset_deg: float, *, timeout_s: float = 30.0,
+        poll_s: float = 0.1,
+        mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
+        token: MotionToken = NO_STOP,
+    ) -> IndiAxisMoveResult:
+        """Run one finite move to arrival; blocks the calling thread.
+
+        ``OnStepIndiClient.move_axis_deg`` runs it in a worker behind a
+        ``MotionHandle``; ``token`` lets that handle stop it.
+        """
+        requested_mode = self.validate_request(
+            axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s, mode=mode
+        )
+        pause = time.sleep if token is NO_STOP else token.sleep
         if not self._lock.acquire(blocking=False):
             raise RuntimeError("Another axis motion is active")
         issued = False
         try:
+            token.report("preflight", fraction=0.0)
             before = self.observe()
             self._check(before)
             assert before.ra_hours is not None and before.dec_deg is not None
@@ -186,12 +207,14 @@ class IndiAxisMover:
             overrun_tolerance = max(
                 0.25, min(0.35, abs(offset_deg) * 0.15)
             )
+            token.check()
             self.transport.set_switch(self.device, "ON_COORD_SET", "SLEW")
             issued = True
             self.transport.issue_numbers(
                 self.device, "EQUATORIAL_EOD_COORD",
                 {"RA": target_ra, "DEC": target_dec},
             )
+            token.report("moving")
             deadline = time.monotonic() + timeout_s
             count = 0
             latest = before
@@ -200,8 +223,9 @@ class IndiAxisMover:
             while True:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Axis move did not reach its finite target")
-                time.sleep(poll_s)
+                pause(poll_s)
                 latest = self.observe()
+                token.report(raw_status=getattr(latest, "raw_status", None))
                 self._check(
                     latest, moving=True,
                     require_fresh_coordinates=not target_coordinates_seen,
@@ -222,6 +246,7 @@ class IndiAxisMover:
                     else latest.dec_deg - before.dec_deg
                 )
                 signed = delta * (1 if offset_deg > 0 else -1)
+                token.report(fraction=signed / abs(offset_deg))
                 if signed < -arrival_tolerance or signed > abs(offset_deg) + overrun_tolerance:
                     raise RuntimeError("Axis move reversed or overran its finite target")
                 reached = abs(delta - offset_deg) <= arrival_tolerance
@@ -243,13 +268,14 @@ class IndiAxisMover:
             self.transport.issue_switch(
                 self.device, "TELESCOPE_TRACK_STATE", "TRACK_OFF"
             )
+            token.report("confirming_stop")
             stopped_polls = 0
             last_revision = latest.status_revision
             stop_deadline = time.monotonic() + 5.0
             while stopped_polls < 2:
                 if time.monotonic() >= stop_deadline:
                     raise TimeoutError("Axis move tracking-off was not confirmed")
-                time.sleep(max(poll_s, 0.15))
+                pause(max(poll_s, 0.15))
                 sample = self.observe()
                 self._check(
                     sample, moving=True, require_fresh_coordinates=False
@@ -274,6 +300,8 @@ class IndiAxisMover:
                 before.dec_deg, latest.dec_deg, before.pier_side, True, count,
                 motion_mode=requested_mode.value,
             )
+        except MotionStopped:
+            raise  # whoever requested the stop has already sent it
         except BaseException:
             if issued:
                 self.emergency_stop()
