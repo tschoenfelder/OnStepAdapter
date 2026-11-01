@@ -6,30 +6,40 @@ from typing import TYPE_CHECKING
 
 from .indi_axis_motion import AxisMotionMode
 from .indi_guiding import IndiGuideCalibration
+from .indi_trace import traced_operation
 
 if TYPE_CHECKING:
     from .indi_client import OnStepIndiClient
+
+
+_traced = traced_operation(lambda mount: getattr(mount._client, "trace", None))
 
 
 class IndiMount:
     def __init__(self, client: OnStepIndiClient) -> None:
         self._client = client
 
+    @_traced
     def get_status(self):
         return self._client.observe_mount()
 
+    @_traced
     def unpark(self):
         return self._client.unpark()
 
+    @_traced
     def go_home(self):
         return self._client.go_home()
 
+    @_traced
     def park(self):
         return self._client.park()
 
+    @_traced
     def stop(self):
         return self._client.emergency_stop()
 
+    @_traced
     def guide_pulse(
         self, direction: str, duration_ms: int, *, command_timeout: float = 3.0
     ):
@@ -38,10 +48,12 @@ class IndiMount:
             direction, duration_ms, command_timeout=command_timeout
         )
 
+    @_traced
     def guide(self, direction: str, duration_ms: int) -> bool:
         """Compatibility wrapper returning whether a guide pulse completed."""
         return self.guide_pulse(direction, duration_ms).pulse_completed
 
+    @_traced
     def guide_correction_ra(
         self,
         offset_arcsec: float,
@@ -59,6 +71,7 @@ class IndiMount:
             command_timeout=command_timeout,
         )
 
+    @_traced
     def guide_correction_dec(
         self,
         offset_arcsec: float,
@@ -81,9 +94,11 @@ class IndiMount:
     def set_guide_calibration(self, calibration: IndiGuideCalibration | None) -> None:
         self._client.set_guide_calibration(calibration)
 
+    @_traced
     def meridian_status(self):
         return self._client.meridian_status()
 
+    @_traced
     def move_ra_axis_deg(
         self, offset_deg: float, *, timeout_s: float = 30.0,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
@@ -93,6 +108,7 @@ class IndiMount:
             "ra", offset_deg, timeout_s=timeout_s, mode=mode
         )
 
+    @_traced
     def move_dec_axis_deg(
         self, offset_deg: float, *, timeout_s: float = 30.0,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
@@ -102,6 +118,7 @@ class IndiMount:
             "dec", offset_deg, timeout_s=timeout_s, mode=mode
         )
 
+    @_traced
     def move_ra(
         self, offset_arcsec: float, *, mode: str = "manual", timeout_s: float = 30.0
     ):
@@ -110,6 +127,7 @@ class IndiMount:
             raise ValueError("INDI 0.4 axis-angle movement supports mode='manual' only")
         return self.move_ra_axis_deg(offset_arcsec / 3600.0, timeout_s=timeout_s)
 
+    @_traced
     def move_dec(
         self, offset_arcsec: float, *, mode: str = "manual", timeout_s: float = 30.0
     ):
@@ -118,10 +136,12 @@ class IndiMount:
             raise ValueError("INDI 0.4 axis-angle movement supports mode='manual' only")
         return self.move_dec_axis_deg(offset_arcsec / 3600.0, timeout_s=timeout_s)
 
+    @_traced
     def goto(self, ra_hours: float, dec_deg: float):
         raise NotImplementedError(
             "INDI goto is unavailable until the 0.4 safety and HOME gates are validated"
         )
 
+    @_traced
     def enable_tracking(self):
         return self._client.enable_tracking()

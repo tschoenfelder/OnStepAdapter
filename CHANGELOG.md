@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add an optional transaction trace (JSON Lines) of every INDI write, every
+  received property update with decoded `:GU#` status, and every public mount
+  call with its result or error. Enable it with `[trace] path` in the runtime
+  configuration or `OnStepClient(trace=...)`. Tracing is off by default and
+  can never interrupt a command.
+- Add `python3 -m onstep_adapter.tools.trace_compare` to summarize a trace or
+  compare an observed run with an expected one, operation by operation.
 - Add `onstep_mock`, a virtual OnStepX mount behind a local INDI server, for
   testing applications against the unchanged adapter. Slews take real time
   (with a speed factor), STOP works at any moment, UNPARK auto-tracks like
