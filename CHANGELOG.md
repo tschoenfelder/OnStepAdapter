@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add `onstep_adapter.capture` and `python3 -m onstep_adapter.tools.indi_capture`
+  to record the traffic between an INDI client, indiserver and OnStepX
+  passively: from a `tcpdump` recording, or through a transparent TCP
+  pass-through that forwards bytes unchanged and never sends anything itself.
+  Captures use the trace format and are checked against sixteen documented
+  assumptions (A01-A16). SET HOME, SET PARK and SYNC writes and the matching
+  LX200 commands are flagged.
+- Add `python3 -m onstep_mock.validate` to replay a capture against the mock
+  and report where the mock differs from the recorded mount, with measured
+  `SimConfig` values. Recordings in `tests/acceptance/recordings/` are
+  acceptance tests. See `docs/CAPTURE.md`.
+
 - **Breaking:** `park()`, `go_home()`, `move_ra_axis_deg()`,
   `move_dec_axis_deg()`, `move_ra()` and `move_dec()` no longer block. They
   return a `MotionHandle` at once with `progress()`, `wait()` and `stop()`;

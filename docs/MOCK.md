@@ -46,6 +46,14 @@ Status, coordinates and pier side are republished every 0.25 s and on every
 state change, so the adapter's freshness checks pass. Meridian flips, pole
 crossings and acceleration curves are not modelled.
 
+## Validated Against Recordings
+
+The behavior above is checked against recordings of the real mount:
+`python3 -m onstep_mock.validate capture.jsonl` replays a capture's client
+writes against the mock and lists every difference, and every capture in
+`tests/acceptance/recordings/` is an acceptance test. See
+[CAPTURE.md](CAPTURE.md) for how to record and what is checked (A01-A16).
+
 ## Inspecting And Steering
 
 - `sim.mount`: frozen `MountSnapshot` with UTC, LST, HA, DEC, RA, ALT/AZ,

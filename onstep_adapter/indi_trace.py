@@ -69,6 +69,24 @@ def _parse_vector(xml: str) -> dict[str, Any]:
     }
 
 
+GU_SUMMARY_FIELDS = (
+    "motion_state", "parked", "tracking", "slewing",
+    "at_home", "guiding", "at_limit", "pier_side",
+)
+
+
+def gu_summary(name: str | None, values: dict[str, str]) -> dict[str, Any] | None:
+    """Decoded ``:GU#`` fields of an ``OnStep Status`` update, else None."""
+    raw = values.get(":GU# return") if name == "OnStep Status" else None
+    if not raw:
+        return None
+    try:
+        decoded = decode_gu(raw)
+    except ValueError:
+        return None
+    return {key: decoded[key] for key in GU_SUMMARY_FIELDS}
+
+
 class TraceRecorder:
     """Thread-safe JSON Lines recorder shared by transport and mount facade."""
 
@@ -98,6 +116,7 @@ class TraceRecorder:
         self._seq = 0
         self._call_id = 0
         self._start = time.monotonic()
+        self.started_at = self._start
         self._closed = False
         from . import __version__
         self.record(
@@ -105,15 +124,24 @@ class TraceRecorder:
             adapter_version=__version__,
         )
 
-    def record(self, record_type: str, **fields: Any) -> None:
+    def record(
+        self, record_type: str, *, at: float | None = None,
+        at_utc: datetime | None = None, **fields: Any,
+    ) -> None:
+        """Write one record.
+
+        ``at`` (a ``time.monotonic()`` value) and ``at_utc`` override the
+        record's timestamps; a passive capture uses them to stamp a record
+        with the moment its bytes arrived rather than when it was decoded.
+        """
         with self._lock:
             if self._closed:
                 return
             self._seq += 1
             line = {
                 "seq": self._seq,
-                "t": round(time.monotonic() - self._start, 6),
-                "utc": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                "t": round((time.monotonic() if at is None else at) - self._start, 6),
+                "utc": (at_utc or datetime.now(timezone.utc)).isoformat(timespec="microseconds"),
                 "thread": threading.current_thread().name,
                 "type": record_type,
             }
@@ -143,19 +171,9 @@ class TraceRecorder:
             "tag": tag, "device": device, "property": name, "kind": kind,
             "state": state, "changed": changed, "values": values, "revision": revision,
         }
-        raw = values.get(":GU# return") if name == "OnStep Status" else None
-        if raw:
-            try:
-                decoded = decode_gu(raw)
-            except ValueError:
-                decoded = None
-            if decoded is not None:
-                fields["gu"] = {
-                    key: decoded[key] for key in (
-                        "motion_state", "parked", "tracking", "slewing",
-                        "at_home", "guiding", "at_limit", "pier_side",
-                    )
-                }
+        gu = gu_summary(name, values)
+        if gu is not None:
+            fields["gu"] = gu
         self.record("recv", **fields)
 
     def close(self) -> None:
