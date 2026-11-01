@@ -27,6 +27,7 @@ class IndiRuntimeConfig:
     movement_min_alt_deg: float = -2.0
     movement_min_dec_deg: float = -80.0
     movement_max_dec_deg: float = 80.0
+    trace_path: str | None = None
 
 
 def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
@@ -61,6 +62,10 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
             movement_min_alt_deg=float(movement.get("min_alt_deg", -2.0)),
             movement_min_dec_deg=float(movement.get("min_dec_deg", -80.0)),
             movement_max_dec_deg=float(movement.get("max_dec_deg", 80.0)),
+            trace_path=(
+                str(data["trace"]["path"])
+                if "trace" in data and data["trace"].get("path") else None
+            ),
         )
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"Invalid INDI configuration: {exc}") from exc

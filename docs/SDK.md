@@ -260,6 +260,45 @@ reports confirmed PARKED before and after each leg. An independent final
 query again showed 15145 and PARKED. This was a remote protocol test, not
 visual certification of full physical focuser travel.
 
+## Transaction Trace
+
+Every run can be recorded for later comparison of real-mount behavior with
+the expected behavior. Tracing is off by default. Enable it in the
+installation TOML:
+
+```toml
+[trace]
+path = "~/.local/state/onstep_adapter/trace-{utc}.jsonl"
+```
+
+or per client with `OnStepClient(config=config, trace="run.jsonl")`.
+`{utc}` becomes the client's start time. The JSON Lines file contains:
+
+- `send`: every INDI vector the adapter writes (property and element values),
+  logged before it leaves the socket;
+- `recv`: every property definition or update received, with property state,
+  changed and merged values, and the decoded `:GU#` flags for `OnStep Status`;
+- `call` / `return` / `error`: every public mount operation and `connect()` /
+  `sync_time_location()`, with arguments, duration and result or exception.
+
+Each record carries a sequence number, monotonic seconds since the session
+started, UTC and the thread name. Write failures are counted, never raised,
+so tracing cannot block a STOP.
+
+Summarize or compare runs:
+
+```bash
+python3 -m onstep_adapter.tools.trace_compare summary real.jsonl
+python3 -m onstep_adapter.tools.trace_compare diff expected.jsonl real.jsonl
+```
+
+`diff` pairs public operations in order and reports as MISMATCH any
+difference in INDI writes, observed motion-state sequence, coordinate
+property states, outcome or result flags. Duration, motion start, motion end
+and tracking time are compared with a relative tolerance (`--time-tolerance`,
+default 50 %, at least `--time-floor` 1 s) and reported as TIMING warnings.
+The exit code is 0 for matching behavior and 1 otherwise.
+
 ## Release Scope
 
 0.4.0 was built as a pure-Python wheel, installed in an isolated directory
