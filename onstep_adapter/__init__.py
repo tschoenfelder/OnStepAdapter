@@ -12,6 +12,9 @@ from .indi_guiding import (
     IndiGuideCorrectionResult,
     IndiGuidePulseResult,
 )
+from .indi_jog import (
+    DEFAULT_JOG_LEASE_S, MAX_JOG_DURATION_S, IndiJogResult, JogHandle,
+)
 from .indi_home import IndiHomeRouteResult, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState
 from .indi_motion import MotionHandle, MotionProgress, MotionStopped
@@ -35,6 +38,7 @@ __all__ = [
     "IndiGuideCalibration",
     "IndiGuideCorrectionResult",
     "IndiHomeRouteResult",
+    "IndiJogResult",
     "IndiMeridianState",
     "IndiMountSnapshot",
     "IndiPositionResult",
@@ -48,7 +52,10 @@ __all__ = [
     "MotionHandle",
     "MotionProgress",
     "MotionStopped",
+    "DEFAULT_JOG_LEASE_S",
     "GUIDE_CHUNK_MS",
+    "JogHandle",
+    "MAX_JOG_DURATION_S",
     "MAX_GUIDE_PULSE_MS",
     "MIN_GUIDE_PULSE_MS",
     "OnStepClient",

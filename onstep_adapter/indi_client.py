@@ -18,6 +18,10 @@ from .indi_guiding import (
     IndiGuideCorrectionResult,
     IndiGuidePulseResult,
 )
+from .indi_jog import (
+    DEFAULT_JOG_DURATION_S, DEFAULT_JOG_LEASE_S, IndiAxisJogger, IndiJogResult,
+    JogHandle, JogLease, validate_jog_request,
+)
 from .indi_home import IndiHomeRouteResult, IndiHomeRouter, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState, IndiMeridianSupervisor, classify_meridian
 from .indi_motion import MotionHandle, MotionToken
@@ -316,6 +320,39 @@ class OnStepIndiClient:
             )
 
         return self._start_motion(f"{axis}_axis", run)
+
+    def jog(
+        self, axis: str, direction: int, *, rate_index: int | None = None,
+        lease_s: float = DEFAULT_JOG_LEASE_S,
+        max_duration_s: float = DEFAULT_JOG_DURATION_S, poll_s: float = 0.1,
+    ) -> JogHandle:
+        """Start a hold-to-move jog and return its handle at once.
+
+        The axis keeps moving while the caller calls ``handle.renew()`` at
+        least every ``lease_s`` seconds, and stops on ``handle.release()``,
+        a missed renewal, ``max_duration_s`` or a DEC/altitude bound.
+        ``rate_index`` picks an entry of the controller's
+        ``TELESCOPE_SLEW_RATE`` list (None keeps the current rate).
+        """
+        if self._axis_mover is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        validate_jog_request(
+            axis, direction, rate_index=rate_index, lease_s=lease_s,
+            max_duration_s=max_duration_s, poll_s=poll_s,
+        )
+        self._axis_mover.require_ra_defined(axis)
+        jogger = IndiAxisJogger(
+            self._transport, self.device, self._axis_mover, self.observe_mount
+        )
+        lease = JogLease(lease_s)
+
+        def run(token: MotionToken) -> IndiJogResult:
+            return jogger.run(
+                axis, direction, lease, rate_index=rate_index,
+                max_duration_s=max_duration_s, poll_s=poll_s, token=token,
+            )
+
+        return JogHandle(self._start_motion(f"{axis}_jog", run), lease)
 
     def meridian_status(self) -> IndiMeridianState:
         if self._policy is None:

@@ -139,6 +139,18 @@ class IndiMount:
         )
 
     @_traced
+    def jog_ra(self, direction: int, **options):
+        """Hold-to-move RA: +1 west (increasing HA), -1 east. Returns a
+        ``JogHandle`` at once; ``renew()`` it while held, ``release()`` on
+        release. Refused until DEC has moved (see ``ra_axis_defined``)."""
+        return self._client.jog("ra", direction, **options)
+
+    @_traced
+    def jog_dec(self, direction: int, **options):
+        """Hold-to-move DEC: +1 north, -1 south. Returns a ``JogHandle``."""
+        return self._client.jog("dec", direction, **options)
+
+    @_traced
     def move_ra(
         self, offset_arcsec: float, *, mode: str = "manual", timeout_s: float = 30.0
     ):

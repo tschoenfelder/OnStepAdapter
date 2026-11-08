@@ -242,7 +242,19 @@ from HOME's diagnostic coordinates. DEC comes first: after connecting, after
 RA is undefined (HOME points at the pole) and an RA-axis move raises
 `RaAxisUndefinedError` unsent until one DEC move has completed;
 `mount.ra_axis_defined` reports it. A DEC move that starts outside the DEC
-bound may run when it brings DEC closer to the bound. Each move monitors the path, disables
+bound may run when it brings DEC closer to the bound.
+
+Hold-to-move: `handle = client.mount.jog_dec(+1, rate_index=5)` starts OnStep
+manual motion at once and returns a `JogHandle`. Call `handle.renew()` at
+least every `lease_s` seconds (default 0.5) while the button is held and
+`handle.release()` when it is let go; `handle.wait()` returns an
+`IndiJogResult` whose `ended_by` is `released`, `lease_expired`,
+`max_duration` or `limit`. A jog checks the same safety inputs as a finite
+move, stops when DEC or the projected altitude would leave the `[movement]`
+bound, and ends with motion off, tracking off and a confirmed stop.
+`handle.stop()` / `mount.stop()` is the emergency stop. The lease is watched
+inside this process, so a crash of the whole process mid-jog does not stop
+the mount. Each move monitors the path, disables
 tracking after arrival and confirms fresh stationary status. Logical
 coordinates are not independent encoder measurements; visually verify each stage. Compatibility
 aliases `move_ra(offset_arcsec, mode="manual")` and

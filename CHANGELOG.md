@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add hold-to-move jogs: `mount.jog_ra(direction)` / `mount.jog_dec(direction)`
+  (and `client.jog()`) start OnStep manual motion and return a `JogHandle`
+  at once. The axis moves while the caller calls `renew()` at least every
+  `lease_s` (0.2-2 s, default 0.5 s) and stops on `release()`, a missed
+  renewal, `max_duration_s` (default 60 s, at most 120 s) or the
+  `[movement]` DEC/altitude bound. Every ending switches the motion off,
+  turns tracking off and confirms two fresh stationary readings; a failure
+  after motion started sends the emergency stop. `rate_index` picks an entry
+  of the controller's `TELESCOPE_SLEW_RATE` list. RA jogs follow the
+  DEC-first rule, and a DEC jog that moved DEC defines RA. The lease is
+  watched in this process: if the whole process dies mid-jog, OnStep keeps
+  moving until something else stops it.
 - **Breaking:** the first axis move after connecting, after `go_home()` or
   `route_park_to_home()`, and whenever a fresh reading reports HOME must be
   DEC. At HOME the mount points at the pole, where RA has a value but no
