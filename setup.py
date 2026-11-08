@@ -26,13 +26,23 @@ class SelectiveBuildPy(build_py):
             "indi_guiding",
             "indi_meridian",
             "indi_mount",
+            "indi_motion",
+            "indi_trace",
             "meridian_policy",
         },
+        # Passive traffic capture (CaptureProxy, pcap import, analysis).
+        "onstep_adapter.capture": {"__init__", "analysis", "pcap", "proxy", "stream"},
         "onstep_adapter.tools": {
             "__init__",
             "indi_focuser_roundtrip",
             "indi_axis_angle_smoke",
+            "indi_capture",
+            "trace_compare",
+            "trace_consolidate",
         },
+        # The virtual OnStepX mount behind a local INDI server, for application tests
+        # and an application's offline mode.
+        "onstep_mock": {"__init__", "mount", "pytest_plugin", "replay", "server", "testing", "validate"},
     }
 
     def run(self) -> None:

@@ -55,8 +55,9 @@ def test_062_wheel_manifest_is_indi_only() -> None:
     assert 'version = "0.6.2"' in pyproject
     assert 'onstep_adapter = ["config.indi.example.toml"]' in pyproject
     assert "pyserial" not in pyproject
-    for excluded in ('"client"', '"serial_bus"', '"mount"', '"focuser"'):
-        assert excluded not in setup
+    adapter_modules = _wheel_allowlist(root)["onstep_adapter"]
+    for excluded in ("client", "serial_bus", "mount", "focuser"):
+        assert excluded not in adapter_modules
     assert '"indi_client"' in setup
     assert '"indi_focuser"' in setup
     assert '"indi_guiding"' in setup
@@ -102,3 +103,55 @@ def test_home_and_park_are_not_counterweight_limit_decisions() -> None:
 
     assert result["applicable"] is False
     assert result["hard_limit_reached"] is False
+
+
+def _wheel_allowlist(root: Path) -> dict[str, set[str]]:
+    import ast
+
+    tree = ast.parse((root / "setup.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign | ast.Assign):
+            targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            if any(getattr(t, "id", None) == "_allowed_modules" for t in targets):
+                return ast.literal_eval(node.value)
+    raise AssertionError("setup.py has no _allowed_modules")
+
+
+def _imported_project_modules(path: Path, package: str) -> set[str]:
+    import ast
+
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package.split(".")[: len(package.split(".")) - node.level + 1]
+                name = ".".join(base + ([node.module] if node.module else []))
+            else:
+                name = node.module or ""
+            if name.split(".")[0] in {"onstep_adapter", "onstep_mock"}:
+                found.add(name)
+        elif isinstance(node, ast.Import):
+            found.update(a.name for a in node.names if a.name.split(".")[0] in {"onstep_adapter", "onstep_mock"})
+    return found
+
+
+def test_wheel_ships_every_module_its_shipped_modules_import() -> None:
+    """A module left out of the allowlist makes the installed wheel fail on import."""
+    root = Path(__file__).resolve().parents[4]
+    allowed = _wheel_allowlist(root)
+    shipped = {f"{pkg}.{mod}" if mod != "__init__" else pkg for pkg, mods in allowed.items() for mod in mods}
+    missing = set()
+    for pkg, mods in allowed.items():
+        for mod in mods:
+            source = root.joinpath(*pkg.split("."), f"{mod}.py")
+            assert source.is_file(), f"allowlisted module does not exist: {source}"
+            for name in _imported_project_modules(source, pkg):
+                if name not in shipped:
+                    missing.add(f"{pkg}.{mod} -> {name}")
+    assert not missing, sorted(missing)
+
+
+def test_wheel_ships_the_mock_and_the_capture_tools() -> None:
+    allowed = _wheel_allowlist(Path(__file__).resolve().parents[4])
+    assert {"server", "testing", "mount"} <= allowed["onstep_mock"]
+    assert {"proxy", "stream"} <= allowed["onstep_adapter.capture"]

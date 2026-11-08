@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Ship `onstep_mock`, `onstep_adapter.capture` and the `indi_capture`,
+  `trace_compare` and `trace_consolidate` tools in the wheel, so applications
+  can run against the mock or record traffic from an installed release. The
+  wheel built from `main` also lacked `indi_motion` and `indi_trace` and
+  failed on `import onstep_adapter`; a release contract test now checks that
+  every module a shipped module imports is shipped too.
 - Add `onstep_adapter.capture` and `python3 -m onstep_adapter.tools.indi_capture`
   to record the traffic between an INDI client, indiserver and OnStepX
   passively: from a `tcpdump` recording, or through a transparent TCP
