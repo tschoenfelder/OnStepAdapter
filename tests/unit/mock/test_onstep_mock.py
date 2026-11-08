@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from onstep_adapter import MotionStopped
+from onstep_adapter import MotionStopped, RaAxisUndefinedError
 from onstep_mock import Pose, SimConfig, SimulatedOnStepServer, VirtualMount, altaz
 
 DEVICE = "LX200 OnStep"
@@ -58,6 +58,40 @@ def test_axis_move_ends_on_target_without_tracking(onstep_sim, onstep_client):
     assert mount.dec_deg == pytest.approx(41.5, abs=1e-3)
     assert not mount.tracking and mount.motion == "IDLE"
     assert mount.pier_side == "west"
+
+
+def test_first_move_after_connecting_must_be_dec(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    writes = len(onstep_sim.writes)
+    assert not onstep_client.mount.ra_axis_defined
+
+    with pytest.raises(RaAxisUndefinedError, match="move the DEC axis first"):
+        onstep_client.mount.move_ra_axis_deg(1.0)
+    assert onstep_client.active_motion is None
+    assert len(onstep_sim.writes) == writes
+
+    onstep_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
+    assert onstep_client.mount.ra_axis_defined
+    ha_before = onstep_sim.mount.ha_h
+    result = onstep_client.mount.move_ra_axis_deg(1.0).wait(timeout=30)
+    assert result.stop_confirmed
+    assert onstep_sim.mount.ha_h == pytest.approx(ha_before + 1.0 / 15.0, abs=0.01)
+
+
+def test_going_home_requires_a_dec_move_before_ra_again(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    onstep_client.mount.move_dec_axis_deg(1.0).wait(timeout=30)
+    assert onstep_client.mount.ra_axis_defined
+
+    onstep_client.mount.go_home().wait(timeout=30)
+
+    assert not onstep_client.mount.ra_axis_defined
+    writes = len(onstep_sim.writes)
+    with pytest.raises(RaAxisUndefinedError):
+        onstep_client.mount.move_ra_axis_deg(1.0)
+    assert len(onstep_sim.writes) == writes
 
 
 @pytest.fixture

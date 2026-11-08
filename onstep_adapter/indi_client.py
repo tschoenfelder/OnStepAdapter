@@ -307,6 +307,7 @@ class OnStepIndiClient:
             axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s, mode=mode
         )
         mover = self._axis_mover
+        mover.require_ra_defined(axis)
 
         def run(token: MotionToken) -> IndiAxisMoveResult:
             return mover.move(
@@ -396,6 +397,7 @@ class OnStepIndiClient:
         self._require_no_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
+        self._mark_ra_undefined()
         return self._home_router.park_to_home(
             unpark_timeout=unpark_timeout, home_timeout=home_timeout
         )
@@ -418,9 +420,11 @@ class OnStepIndiClient:
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
         router = self._home_router
-        return self._start_motion(
+        handle = self._start_motion(
             "home", lambda token: router.go_home(timeout=timeout, token=token)
         )
+        self._mark_ra_undefined()
+        return handle
 
     def park(self, *, timeout: float = 120.0) -> MotionHandle:
         """Start the move to OnStep's stored PARK and return its handle at once."""
@@ -431,6 +435,19 @@ class OnStepIndiClient:
         return self._start_motion(
             "park", lambda token: router.park(timeout=timeout, token=token)
         )
+
+    @property
+    def ra_axis_defined(self) -> bool:
+        """False after connecting and after HOME until a DEC axis move completed.
+
+        RA-axis moves are refused while this is False; move DEC first.
+        """
+        mover = self._axis_mover
+        return mover is not None and mover.ra_axis_defined
+
+    def _mark_ra_undefined(self) -> None:
+        if self._axis_mover is not None:
+            self._axis_mover.mark_ra_undefined()
 
     def _require_home_motion(self) -> None:
         if self._config is None or not self._config.home_motion_enabled:
