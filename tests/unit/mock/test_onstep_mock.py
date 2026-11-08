@@ -94,6 +94,21 @@ def test_going_home_requires_a_dec_move_before_ra_again(onstep_sim, onstep_clien
     assert len(onstep_sim.writes) == writes
 
 
+def test_at_home_a_small_dec_move_comes_first_then_ra(onstep_sim, onstep_client):
+    onstep_client.mount.unpark()
+    onstep_client.mount.go_home().wait(timeout=30)
+    time.sleep(0.4)
+    assert onstep_sim.mount.at_home
+    with pytest.raises(RaAxisUndefinedError):
+        onstep_client.mount.move_ra_axis_deg(1.0)
+
+    onstep_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
+
+    mount = onstep_sim.mount
+    assert mount.dec_deg == pytest.approx(89.0, abs=1e-3) and not mount.at_home
+    assert onstep_client.mount.ra_axis_defined
+
+
 @pytest.fixture
 def slow_sim():
     with SimulatedOnStepServer(SimConfig(speed=1.0)) as sim:

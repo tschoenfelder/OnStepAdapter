@@ -237,7 +237,12 @@ defaults to -2 degrees. When an authoritative HA sample is available, the
 adapter computes the projected target altitude and refuses a lower endpoint
 before sending any INDI command. Without astronomical time authority, a
 HOME-neutral terrestrial move retains the DEC gate but cannot infer altitude
-from HOME's diagnostic coordinates. Each move monitors the path, disables
+from HOME's diagnostic coordinates. DEC comes first: after connecting, after
+`go_home()`/`route_park_to_home()` and whenever a fresh reading reports HOME,
+RA is undefined (HOME points at the pole) and an RA-axis move raises
+`RaAxisUndefinedError` unsent until one DEC move has completed;
+`mount.ra_axis_defined` reports it. A DEC move that starts outside the DEC
+bound may run when it brings DEC closer to the bound. Each move monitors the path, disables
 tracking after arrival and confirms fresh stationary status. Logical
 coordinates are not independent encoder measurements; visually verify each stage. Compatibility
 aliases `move_ra(offset_arcsec, mode="manual")` and

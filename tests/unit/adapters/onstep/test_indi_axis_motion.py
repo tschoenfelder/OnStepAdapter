@@ -132,6 +132,34 @@ class IndiAxisMotionTests(unittest.TestCase):
         self.assertEqual(fake.commands, [])
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_dec_move_from_outside_the_bound_may_only_approach_it(self, unused_sleep):
+        # HOME is DEC +90, outside the default +80 bound: a DEC move toward
+        # the bound runs, a DEC move away from it and any RA move do not.
+        samples = [
+            snapshot(ha=None, dec=90.0, revision=1, at_home=True),
+            snapshot(ha=None, dec=89.5, revision=2),
+            snapshot(ha=None, dec=89.0, revision=3),
+            snapshot(ha=None, dec=89.0, revision=4),
+            snapshot(ha=None, dec=89.0, revision=5),
+        ]
+        mover, _, stops = self.make_mover(samples, ra_defined=False)
+        result = mover.move("dec", -1.0)
+        self.assertAlmostEqual(result.final_dec_deg, 89.0)
+        self.assertEqual(stops, [])
+
+        for axis, offset in (("dec", 0.5), ("ra", 1.0)):
+            with self.subTest(axis=axis, offset=offset):
+                mover, fake, _ = self.make_mover([snapshot(ha=None, dec=85.0)])
+                with self.assertRaisesRegex(RuntimeError, "Projected DEC"):
+                    mover.move(axis, offset)
+                self.assertEqual(fake.commands, [])
+
+        mover, fake, _ = self.make_mover([snapshot(ha=None, dec=-85.0)])
+        with self.assertRaisesRegex(RuntimeError, "Projected DEC"):
+            mover.move("dec", -1.0)
+        self.assertEqual(fake.commands, [])
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
     def test_projected_altitude_allows_minus_two_degrees_inclusively(
         self, unused_sleep
     ):

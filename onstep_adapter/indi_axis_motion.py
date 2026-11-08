@@ -146,6 +146,10 @@ class IndiAxisMover:
                 "non-tracking and fault-free state"
             )
 
+    def _dec_outside_bound(self, dec_deg: float) -> float:
+        """How far ``dec_deg`` lies outside the DEC bound (0 inside it)."""
+        return max(self.min_dec_deg - dec_deg, dec_deg - self.max_dec_deg, 0.0)
+
     @staticmethod
     def _ra_axis_delta(initial_ra: float, current_ra: float) -> float:
         # Increasing HA is the opposite of increasing RA.
@@ -226,7 +230,13 @@ class IndiAxisMover:
                 before.ra_hours - offset_deg / 15.0
                 if axis == "ra" else before.ra_hours
             ) % 24.0
-            if not self.min_dec_deg <= target_dec <= self.max_dec_deg:
+            if not self.min_dec_deg <= target_dec <= self.max_dec_deg and not (
+                axis == "dec" and self._dec_outside_bound(target_dec)
+                < self._dec_outside_bound(before.dec_deg)
+            ):
+                # A DEC move that starts outside the bound (HOME is DEC +90)
+                # may still run when it only brings DEC closer to the bound:
+                # that is the DEC-first move RA needs at HOME.
                 raise RuntimeError("Projected DEC leaves the local movement bound")
             if before.ha_deg is not None:
                 target_ha = before.ha_deg + (offset_deg if axis == "ra" else 0.0)

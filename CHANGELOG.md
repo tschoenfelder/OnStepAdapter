@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Breaking:** the first axis move after connecting, after `go_home()` or
+  `route_park_to_home()`, and whenever a fresh reading reports HOME must be
+  DEC. At HOME the mount points at the pole, where RA has a value but no
+  meaning, so `move_ra_axis_deg()` and `move_ra()` raise
+  `RaAxisUndefinedError` (a `RuntimeError`) before anything is sent until a
+  DEC move has completed and been verified. `mount.ra_axis_defined` reports
+  the state.
+- A DEC move that starts outside the `[movement]` DEC bound (HOME is
+  DEC +90) may now run when it only brings DEC closer to the bound, so the
+  DEC-first move from HOME no longer needs a full 10 degree step.
 - Ship `onstep_mock`, `onstep_adapter.capture` and the `indi_capture`,
   `trace_compare` and `trace_consolidate` tools in the wheel, so applications
   can run against the mock or record traffic from an installed release. The
