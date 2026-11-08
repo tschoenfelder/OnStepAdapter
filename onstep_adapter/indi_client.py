@@ -18,6 +18,10 @@ from .indi_guiding import (
     IndiGuideCorrectionResult,
     IndiGuidePulseResult,
 )
+from .indi_jog import (
+    DEFAULT_JOG_DURATION_S, DEFAULT_JOG_LEASE_S, IndiAxisJogger, IndiJogResult,
+    JogHandle, JogLease, validate_jog_request,
+)
 from .indi_home import IndiHomeRouteResult, IndiHomeRouter, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState, IndiMeridianSupervisor, classify_meridian
 from .indi_motion import MotionHandle, MotionToken
@@ -307,6 +311,7 @@ class OnStepIndiClient:
             axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s, mode=mode
         )
         mover = self._axis_mover
+        mover.require_ra_defined(axis)
 
         def run(token: MotionToken) -> IndiAxisMoveResult:
             return mover.move(
@@ -315,6 +320,39 @@ class OnStepIndiClient:
             )
 
         return self._start_motion(f"{axis}_axis", run)
+
+    def jog(
+        self, axis: str, direction: int, *, rate_index: int | None = None,
+        lease_s: float = DEFAULT_JOG_LEASE_S,
+        max_duration_s: float = DEFAULT_JOG_DURATION_S, poll_s: float = 0.1,
+    ) -> JogHandle:
+        """Start a hold-to-move jog and return its handle at once.
+
+        The axis keeps moving while the caller calls ``handle.renew()`` at
+        least every ``lease_s`` seconds, and stops on ``handle.release()``,
+        a missed renewal, ``max_duration_s`` or a DEC/altitude bound.
+        ``rate_index`` picks an entry of the controller's
+        ``TELESCOPE_SLEW_RATE`` list (None keeps the current rate).
+        """
+        if self._axis_mover is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        validate_jog_request(
+            axis, direction, rate_index=rate_index, lease_s=lease_s,
+            max_duration_s=max_duration_s, poll_s=poll_s,
+        )
+        self._axis_mover.require_ra_defined(axis)
+        jogger = IndiAxisJogger(
+            self._transport, self.device, self._axis_mover, self.observe_mount
+        )
+        lease = JogLease(lease_s)
+
+        def run(token: MotionToken) -> IndiJogResult:
+            return jogger.run(
+                axis, direction, lease, rate_index=rate_index,
+                max_duration_s=max_duration_s, poll_s=poll_s, token=token,
+            )
+
+        return JogHandle(self._start_motion(f"{axis}_jog", run), lease)
 
     def meridian_status(self) -> IndiMeridianState:
         if self._policy is None:
@@ -396,6 +434,7 @@ class OnStepIndiClient:
         self._require_no_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
+        self._mark_ra_undefined()
         return self._home_router.park_to_home(
             unpark_timeout=unpark_timeout, home_timeout=home_timeout
         )
@@ -418,9 +457,11 @@ class OnStepIndiClient:
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
         router = self._home_router
-        return self._start_motion(
+        handle = self._start_motion(
             "home", lambda token: router.go_home(timeout=timeout, token=token)
         )
+        self._mark_ra_undefined()
+        return handle
 
     def park(self, *, timeout: float = 120.0) -> MotionHandle:
         """Start the move to OnStep's stored PARK and return its handle at once."""
@@ -431,6 +472,19 @@ class OnStepIndiClient:
         return self._start_motion(
             "park", lambda token: router.park(timeout=timeout, token=token)
         )
+
+    @property
+    def ra_axis_defined(self) -> bool:
+        """False after connecting and after HOME until a DEC axis move completed.
+
+        RA-axis moves are refused while this is False; move DEC first.
+        """
+        mover = self._axis_mover
+        return mover is not None and mover.ra_axis_defined
+
+    def _mark_ra_undefined(self) -> None:
+        if self._axis_mover is not None:
+            self._axis_mover.mark_ra_undefined()
 
     def _require_home_motion(self) -> None:
         if self._config is None or not self._config.home_motion_enabled:

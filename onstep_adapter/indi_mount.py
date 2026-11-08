@@ -101,12 +101,21 @@ class IndiMount:
     def meridian_status(self):
         return self._client.meridian_status()
 
+    @property
+    def ra_axis_defined(self) -> bool:
+        """False after connecting and at HOME until DEC has moved; RA moves are
+        refused until then (move DEC first)."""
+        return self._client.ra_axis_defined
+
     @_traced
     def move_ra_axis_deg(
         self, offset_deg: float, *, timeout_s: float = 30.0,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
     ):
         """Finite same-pier RA-axis target; positive increases hour angle.
+
+        Refused with ``RaAxisUndefinedError`` after connecting and at HOME until
+        a DEC axis move has completed (see ``ra_axis_defined``).
 
         Returns a ``MotionHandle`` at once; ``wait()`` gives the
         ``IndiAxisMoveResult``.
@@ -128,6 +137,18 @@ class IndiMount:
         return self._client.move_axis_deg(
             "dec", offset_deg, timeout_s=timeout_s, mode=mode
         )
+
+    @_traced
+    def jog_ra(self, direction: int, **options):
+        """Hold-to-move RA: +1 west (increasing HA), -1 east. Returns a
+        ``JogHandle`` at once; ``renew()`` it while held, ``release()`` on
+        release. Refused until DEC has moved (see ``ra_axis_defined``)."""
+        return self._client.jog("ra", direction, **options)
+
+    @_traced
+    def jog_dec(self, direction: int, **options):
+        """Hold-to-move DEC: +1 north, -1 south. Returns a ``JogHandle``."""
+        return self._client.jog("dec", direction, **options)
 
     @_traced
     def move_ra(

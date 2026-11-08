@@ -196,6 +196,19 @@ class IndiTransport:
         )
         return before.revision
 
+    def issue_switch_off(
+        self, device: str, name: str, element: str, *, timeout: float = 3.0
+    ) -> int:
+        """Switch one element Off (ends a manual motion); caller verifies status."""
+        before = self.wait_property(device, name, timeout=timeout)
+        if before.kind != "Switch" or before.permission == "ro" or element not in before.values:
+            raise ValueError(f"{device}.{name}.{element} is not a writable INDI switch")
+        self._send(
+            f"<newSwitchVector device={quoteattr(device)} name={quoteattr(name)}>"
+            f"<oneSwitch name={quoteattr(element)}>Off</oneSwitch></newSwitchVector>"
+        )
+        return before.revision
+
     def set_text(
         self,
         device: str,

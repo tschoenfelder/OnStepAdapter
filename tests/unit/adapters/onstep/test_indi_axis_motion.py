@@ -2,7 +2,9 @@ import unittest
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
-from onstep_adapter.indi_axis_motion import AxisMotionMode, IndiAxisMover
+from onstep_adapter.indi_axis_motion import (
+    RA_UNDEFINED_AT_HOME, AxisMotionMode, IndiAxisMover, RaAxisUndefinedError,
+)
 from onstep_adapter.indi_mount import IndiMount
 from onstep_adapter.indi_status import IndiMountSnapshot
 
@@ -40,7 +42,11 @@ class FakeTransport:
 
 
 class IndiAxisMotionTests(unittest.TestCase):
-    def make_mover(self, samples, *, issue_error=None, **movement_limits):
+    def make_mover(
+        self, samples, *, issue_error=None, ra_defined=True, **movement_limits
+    ):
+        """``ra_defined``: start as if a DEC move already defined RA (most tests
+        are not about the DEC-first rule; ``DecFirstTests`` covers it)."""
         fake = FakeTransport(issue_error=issue_error)
         sequence = iter(samples)
         stops = []
@@ -49,6 +55,8 @@ class IndiAxisMotionTests(unittest.TestCase):
             lambda: stops.append("emergency_stop"),
             **movement_limits,
         )
+        if ra_defined:
+            mover._ra_defined = True
         return mover, fake, stops
 
     def test_sky_modes_are_explicitly_refused_without_commands(self):
@@ -121,6 +129,34 @@ class IndiAxisMotionTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "Projected DEC"):
             mover.move("dec", 1.0)
+        self.assertEqual(fake.commands, [])
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_dec_move_from_outside_the_bound_may_only_approach_it(self, unused_sleep):
+        # HOME is DEC +90, outside the default +80 bound: a DEC move toward
+        # the bound runs, a DEC move away from it and any RA move do not.
+        samples = [
+            snapshot(ha=None, dec=90.0, revision=1, at_home=True),
+            snapshot(ha=None, dec=89.5, revision=2),
+            snapshot(ha=None, dec=89.0, revision=3),
+            snapshot(ha=None, dec=89.0, revision=4),
+            snapshot(ha=None, dec=89.0, revision=5),
+        ]
+        mover, _, stops = self.make_mover(samples, ra_defined=False)
+        result = mover.move("dec", -1.0)
+        self.assertAlmostEqual(result.final_dec_deg, 89.0)
+        self.assertEqual(stops, [])
+
+        for axis, offset in (("dec", 0.5), ("ra", 1.0)):
+            with self.subTest(axis=axis, offset=offset):
+                mover, fake, _ = self.make_mover([snapshot(ha=None, dec=85.0)])
+                with self.assertRaisesRegex(RuntimeError, "Projected DEC"):
+                    mover.move(axis, offset)
+                self.assertEqual(fake.commands, [])
+
+        mover, fake, _ = self.make_mover([snapshot(ha=None, dec=-85.0)])
+        with self.assertRaisesRegex(RuntimeError, "Projected DEC"):
+            mover.move("dec", -1.0)
         self.assertEqual(fake.commands, [])
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
@@ -242,31 +278,25 @@ class IndiAxisMotionTests(unittest.TestCase):
             "time_site_authority_unestablished", "hour_angle_unavailable",
             "home_authority_unestablished", "mechanical_terminal_state",
         )
+        common = dict(
+            ha=None, time_site_authority=False, home_authority=False,
+            blockers=blockers[:-1],
+        )
         samples = [
             snapshot(
                 ha=None, revision=1, at_home=True, time_site_authority=False,
                 home_authority=False, blockers=blockers,
             ),
-            snapshot(ha=None, ra=10 - 1 / 30, revision=2, at_home=False,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
-            snapshot(ha=None, ra=10 - 1 / 15, revision=3,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
-            snapshot(ha=None, ra=10 - 1 / 15, revision=4,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
-            snapshot(ha=None, ra=10 - 1 / 15, revision=5,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
-            snapshot(ha=None, ra=10 - 1 / 15, revision=6,
-                     time_site_authority=False, home_authority=False,
-                     blockers=blockers[:-1]),
+            snapshot(dec=19.5, revision=2, **common),
+            snapshot(dec=19.0, revision=3, **common),
+            snapshot(dec=19.0, revision=4, **common),
+            snapshot(dec=19.0, revision=5, **common),
+            snapshot(dec=19.0, revision=6, **common),
         ]
         mover, _, stops = self.make_mover(samples)
-        result = mover.move("ra", 1.0)
-        self.assertAlmostEqual(result.measured_deg, 1.0)
-        self.assertEqual(result.requested_arcsec, 3600.0)
+        result = mover.move("dec", -1.0)
+        self.assertAlmostEqual(result.measured_deg, -1.0)
+        self.assertEqual(result.requested_arcsec, -3600.0)
         self.assertEqual(stops, [])
 
     def test_compatibility_manual_api_converts_arcseconds_to_degrees(self):
@@ -317,6 +347,127 @@ class IndiAxisMotionTests(unittest.TestCase):
                 result = mover.move("ra", degrees)
                 self.assertAlmostEqual(result.requested_arcsec, arcsec)
                 self.assertAlmostEqual(result.measured_deg, degrees)
+
+
+def ra_samples(start_rev, *, ra=10.0, degrees=1.0, **changes):
+    """The five readings one completed RA-axis move of ``degrees`` takes."""
+    end = ra - degrees / 15
+    points = [ra, ra - degrees / 30, end, end, end]
+    return [
+        snapshot(ra=value, revision=start_rev + index, **changes)
+        for index, value in enumerate(points)
+    ]
+
+
+def dec_samples(start_rev, *, dec=20.0, degrees=1.0, end_changes=None, **changes):
+    """The five readings one completed DEC-axis move of ``degrees`` takes."""
+    end = dec + degrees
+    points = [dec, dec + degrees / 2, end, end, end]
+    samples = []
+    for index, value in enumerate(points):
+        extra = dict(changes)
+        if index and end_changes:
+            extra.update(end_changes)
+        samples.append(snapshot(dec=value, revision=start_rev + index, **extra))
+    return samples
+
+
+class DecFirstTests(unittest.TestCase):
+    """At HOME the mount points at the pole: RA has a value but no meaning
+    until DEC has moved, so the first move after connecting or HOME is DEC."""
+
+    def make_mover(self, samples):
+        fake = FakeTransport()
+        sequence = iter(samples)
+        stops = []
+        mover = IndiAxisMover(
+            fake, "LX200 OnStep", 50.336, 8.533, lambda: next(sequence),
+            lambda: stops.append("emergency_stop"),
+        )
+        return mover, fake, stops
+
+    def test_ra_move_right_after_connecting_is_refused_unsent(self):
+        mover, fake, stops = self.make_mover([snapshot()])
+        self.assertFalse(mover.ra_axis_defined)
+        with self.assertRaises(RaAxisUndefinedError) as raised:
+            mover.move("ra", 1.0)
+        self.assertEqual(str(raised.exception), RA_UNDEFINED_AT_HOME)
+        self.assertIsInstance(raised.exception, RuntimeError)
+        self.assertEqual(fake.commands, [])
+        self.assertEqual(stops, [])
+
+    def test_require_ra_defined_refuses_before_any_reading(self):
+        mover, _, _ = self.make_mover([])
+        with self.assertRaises(RaAxisUndefinedError):
+            mover.require_ra_defined("ra")
+        mover.require_ra_defined("dec")  # DEC is always allowed
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_completed_dec_move_unlocks_ra(self, unused_sleep):
+        mover, fake, stops = self.make_mover(dec_samples(1) + ra_samples(10))
+        mover.move("dec", 1.0)
+        self.assertTrue(mover.ra_axis_defined)
+        result = mover.move("ra", 1.0)
+        self.assertAlmostEqual(result.measured_deg, 1.0)
+        self.assertEqual(stops, [])
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_dec_move_away_from_home_unlocks_ra(self, unused_sleep):
+        samples = dec_samples(
+            1, degrees=-1.0, at_home=True, end_changes={"at_home": False}
+        )
+        mover, _, _ = self.make_mover(samples + ra_samples(10))
+        mover.move("dec", -1.0)
+        self.assertTrue(mover.ra_axis_defined)
+        mover.move("ra", 1.0)
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_reaching_home_again_requires_dec_first_again(self, unused_sleep):
+        samples = dec_samples(1) + [snapshot(revision=10, at_home=True)]
+        mover, fake, _ = self.make_mover(samples)
+        mover.move("dec", 1.0)
+        sent = len(fake.commands)
+        with self.assertRaises(RaAxisUndefinedError):
+            mover.move("ra", 1.0)
+        self.assertFalse(mover.ra_axis_defined)
+        self.assertEqual(len(fake.commands), sent)
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_mark_ra_undefined_requires_dec_first_again(self, unused_sleep):
+        mover, fake, _ = self.make_mover(dec_samples(1) + [snapshot(revision=10)])
+        mover.move("dec", 1.0)
+        mover.mark_ra_undefined()
+        sent = len(fake.commands)
+        with self.assertRaises(RaAxisUndefinedError):
+            mover.move("ra", 1.0)
+        self.assertEqual(len(fake.commands), sent)
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_failed_dec_move_leaves_ra_undefined(self, unused_sleep):
+        mover, _, stops = self.make_mover([
+            snapshot(dec=20.0, revision=1), snapshot(dec=19.5, revision=2),
+        ])
+        with self.assertRaisesRegex(RuntimeError, "reversed"):
+            mover.move("dec", 1.0)
+        self.assertEqual(stops, ["emergency_stop"])
+        self.assertFalse(mover.ra_axis_defined)
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_ra_moves_keep_ra_defined(self, unused_sleep):
+        mover, _, _ = self.make_mover(
+            dec_samples(1) + ra_samples(10) + ra_samples(20, ra=10 - 1 / 15)
+        )
+        mover.move("dec", 1.0)
+        mover.move("ra", 1.0)
+        mover.move("ra", 1.0)
+        self.assertTrue(mover.ra_axis_defined)
+
+    def test_mount_facade_reports_the_client_state(self):
+        client = Mock()
+        client.ra_axis_defined = False
+        self.assertFalse(IndiMount(client).ra_axis_defined)
+        client.ra_axis_defined = True
+        self.assertTrue(IndiMount(client).ra_axis_defined)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """INDI-only public API for the OnStep adapter."""
 
 from .indi_client import IndiStartupStatus, IndiSyncResult, OnStepIndiClient
-from .indi_axis_motion import IndiAxisMoveResult
+from .indi_axis_motion import RA_UNDEFINED_AT_HOME, IndiAxisMoveResult, RaAxisUndefinedError
 from .indi_config import IndiRuntimeConfig, load_indi_config
 from .indi_focuser import IndiFocuser, IndiFocuserMoveResult, IndiFocuserSnapshot
 from .indi_guiding import (
@@ -11,6 +11,9 @@ from .indi_guiding import (
     IndiGuideCalibration,
     IndiGuideCorrectionResult,
     IndiGuidePulseResult,
+)
+from .indi_jog import (
+    DEFAULT_JOG_LEASE_S, MAX_JOG_DURATION_S, IndiJogResult, JogHandle,
 )
 from .indi_home import IndiHomeRouteResult, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState
@@ -35,6 +38,7 @@ __all__ = [
     "IndiGuideCalibration",
     "IndiGuideCorrectionResult",
     "IndiHomeRouteResult",
+    "IndiJogResult",
     "IndiMeridianState",
     "IndiMountSnapshot",
     "IndiPositionResult",
@@ -48,12 +52,17 @@ __all__ = [
     "MotionHandle",
     "MotionProgress",
     "MotionStopped",
+    "DEFAULT_JOG_LEASE_S",
     "GUIDE_CHUNK_MS",
+    "JogHandle",
+    "MAX_JOG_DURATION_S",
     "MAX_GUIDE_PULSE_MS",
     "MIN_GUIDE_PULSE_MS",
     "OnStepClient",
     "OnStepFocuser",
     "OnStepMount",
+    "RA_UNDEFINED_AT_HOME",
+    "RaAxisUndefinedError",
     "load_indi_config",
     "__version__",
 ]

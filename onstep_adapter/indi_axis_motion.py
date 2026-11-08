@@ -17,6 +17,20 @@ Axis = Literal["ra", "dec"]
 MIN_AXIS_MOVE_ARCSEC = 30.0
 MAX_AXIS_MOVE_DEG = 10.0
 
+#: Why an RA-axis move is refused before the DEC axis has moved (see
+#: ``IndiAxisMover.ra_axis_defined``).
+RA_UNDEFINED_AT_HOME = (
+    "RA is not defined at HOME or right after connecting: move the DEC axis "
+    "first, then RA (nothing was sent)"
+)
+
+
+class RaAxisUndefinedError(RuntimeError):
+    """An RA-axis move was requested before a DEC move defined RA."""
+
+    def __init__(self) -> None:
+        super().__init__(RA_UNDEFINED_AT_HOME)
+
 
 class AxisMotionMode(str, Enum):
     """Reference frame for a bounded axis-angle request."""
@@ -49,6 +63,12 @@ class IndiAxisMover:
 
     Positive RA-axis angle increases HA (westward); positive DEC is northward.
     Logical coordinates are not independent mechanical encoders.
+
+    DEC first: at HOME the mount points at the pole, where RA has a value but
+    no meaning, so an RA target computed from it is undefined. After
+    connecting (a new mover per connection), after ``mark_ra_undefined()``
+    (HOME was commanded) and whenever a fresh reading reports HOME, an RA move
+    is refused unsent until one DEC move has completed and been verified.
     """
 
     def __init__(
@@ -77,6 +97,21 @@ class IndiAxisMover:
         self.observe = observe
         self.emergency_stop = emergency_stop
         self._lock = threading.Lock()
+        self._ra_defined = False
+
+    @property
+    def ra_axis_defined(self) -> bool:
+        """False until a verified DEC move after connecting or reaching HOME."""
+        return self._ra_defined
+
+    def mark_ra_undefined(self) -> None:
+        """RA becomes undefined again, e.g. because the mount was sent HOME."""
+        self._ra_defined = False
+
+    def require_ra_defined(self, axis: Axis) -> None:
+        """Refuse an RA move while RA is undefined; never sends anything."""
+        if axis == "ra" and not self._ra_defined:
+            raise RaAxisUndefinedError()
 
     @staticmethod
     def _check(
@@ -110,6 +145,10 @@ class IndiAxisMover:
                 "Local axis motion requires fresh unparked, stationary, "
                 "non-tracking and fault-free state"
             )
+
+    def _dec_outside_bound(self, dec_deg: float) -> float:
+        """How far ``dec_deg`` lies outside the DEC bound (0 inside it)."""
+        return max(self.min_dec_deg - dec_deg, dec_deg - self.max_dec_deg, 0.0)
 
     @staticmethod
     def _ra_axis_delta(initial_ra: float, current_ra: float) -> float:
@@ -182,13 +221,22 @@ class IndiAxisMover:
             token.report("preflight", fraction=0.0)
             before = self.observe()
             self._check(before)
+            if before.at_home:
+                self._ra_defined = False
+            self.require_ra_defined(axis)
             assert before.ra_hours is not None and before.dec_deg is not None
             target_dec = before.dec_deg + (offset_deg if axis == "dec" else 0.0)
             target_ra = (
                 before.ra_hours - offset_deg / 15.0
                 if axis == "ra" else before.ra_hours
             ) % 24.0
-            if not self.min_dec_deg <= target_dec <= self.max_dec_deg:
+            if not self.min_dec_deg <= target_dec <= self.max_dec_deg and not (
+                axis == "dec" and self._dec_outside_bound(target_dec)
+                < self._dec_outside_bound(before.dec_deg)
+            ):
+                # A DEC move that starts outside the bound (HOME is DEC +90)
+                # may still run when it only brings DEC closer to the bound:
+                # that is the DEC-first move RA needs at HOME.
                 raise RuntimeError("Projected DEC leaves the local movement bound")
             if before.ha_deg is not None:
                 target_ha = before.ha_deg + (offset_deg if axis == "ra" else 0.0)
@@ -294,6 +342,8 @@ class IndiAxisMover:
             )
             if abs(measured - offset_deg) > arrival_tolerance:
                 raise RuntimeError("Axis move ended outside its scaled verification tolerance")
+            if axis == "dec" and not latest.at_home:
+                self._ra_defined = True
             return IndiAxisMoveResult(
                 axis, offset_deg, offset_deg * 3600.0, measured,
                 before.ra_hours, latest.ra_hours,
