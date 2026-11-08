@@ -9,7 +9,7 @@ description = "INDI-backed Python adapter for OnStep mount and focuser control"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
-authors = [{name = "Thomas Schoenfelder"}]
+authors = [{name = "Torsten Schoenfelder"}]
 dependencies = []
 keywords = ["astronomy", "telescope", "onstep", "mount", "focuser"]
 classifiers = [
