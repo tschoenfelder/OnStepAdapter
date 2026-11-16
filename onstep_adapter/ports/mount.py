@@ -140,6 +140,14 @@ class MountPort(ABC):
         """Return application-supplied angular motion calibration, if installed."""
         return None
 
+    def get_altaz(self) -> tuple[float, float]:
+        """Return the controller-reported horizontal altitude and azimuth."""
+        raise NotImplementedError("horizontal position is not supported")
+
+    def goto_altaz(self, altitude: float, azimuth: float) -> bool:
+        """Start the controller's native horizontal goto."""
+        raise NotImplementedError("horizontal goto is not supported")
+
     def set_motion_calibration(self, calibration: object | None) -> None:
         """Install or clear application-supplied angular motion calibration."""
         raise NotImplementedError("runtime motion calibration is not supported")

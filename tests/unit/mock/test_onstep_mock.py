@@ -51,11 +51,12 @@ def test_park_returns_to_the_single_stored_pose(onstep_sim, onstep_client):
 def test_axis_move_ends_on_target_without_tracking(onstep_sim, onstep_client):
     onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
     time.sleep(0.4)
+    # Positive DEC follows the OnStep jog direction and lowers sky DEC.
     result = onstep_client.mount.move_dec_axis_deg(1.5).wait(timeout=30)
 
     assert result.stop_confirmed
     mount = onstep_sim.mount
-    assert mount.dec_deg == pytest.approx(41.5, abs=1e-3)
+    assert mount.dec_deg == pytest.approx(38.5, abs=1e-3)
     assert not mount.tracking and mount.motion == "IDLE"
     assert mount.pier_side == "west"
 
@@ -102,7 +103,7 @@ def test_at_home_a_small_dec_move_comes_first_then_ra(onstep_sim, onstep_client)
     with pytest.raises(RaAxisUndefinedError):
         onstep_client.mount.move_ra_axis_deg(1.0)
 
-    onstep_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
+    onstep_client.mount.move_dec_axis_deg(1.0).wait(timeout=30)
 
     mount = onstep_sim.mount
     assert mount.dec_deg == pytest.approx(89.0, abs=1e-3) and not mount.at_home
@@ -237,7 +238,7 @@ def test_only_one_move_runs_at_a_time(slow_sim, slow_client):
 
 def test_axis_move_reports_fraction_and_can_be_stopped(slow_sim, slow_client):
     move = slow_client.mount.move_dec_axis_deg(8.0)
-    slow_sim.wait_until(lambda m: m.dec_deg > 32.0, timeout=5)
+    slow_sim.wait_until(lambda m: m.dec_deg < 28.0, timeout=5)
     deadline = time.monotonic() + 2
     while (move.progress().fraction or 0.0) <= 0.0 and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -248,7 +249,7 @@ def test_axis_move_reports_fraction_and_can_be_stopped(slow_sim, slow_client):
     with pytest.raises(MotionStopped):
         move.wait(timeout=2)
     mount = slow_sim.mount
-    assert 30.0 < mount.dec_deg < 38.0 and mount.motion == "IDLE"
+    assert 22.0 < mount.dec_deg < 30.0 and mount.motion == "IDLE"
 
 
 def test_invalid_axis_move_is_refused_before_anything_starts(onstep_sim, onstep_client):

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Merge the 0.6.7 to 0.6.11 releases (tagged on a side branch) into `main`:
+  finite axis moves may be up to 15 degrees; HA missing from INDI is derived
+  from the UTC clock and the configured longitude; finite-move targets and
+  arrival use the sky separation from the target RA/DEC; continuous Axis 2
+  through the north pole and transient INDI pier display conflicts are
+  handled.
+- **Breaking:** a positive DEC-axis angle now follows OnStep's mechanical
+  jog direction, which lowers the published sky DEC (`move_dec_axis_deg(+x)`
+  targets DEC - x). The DEC-first move from HOME (DEC +90) toward the bound
+  is therefore a positive DEC move.
 - Add hold-to-move jogs: `mount.jog_ra(direction)` / `mount.jog_dec(direction)`
   (and `client.jog()`) start OnStep manual motion and return a `JogHandle`
   at once. The axis moves while the caller calls `renew()` at least every
@@ -70,6 +80,37 @@
   (with a speed factor), STOP works at any moment, UNPARK auto-tracks like
   OnStepX, HOME and PARK are fixed, and SET HOME, SET PARK and SYNC are
   rejected and logged. Tests inspect `server.mount` and `server.writes`.
+
+## 0.6.6 - 2026-10-20
+
+- Track terrestrial DEC jogs through the north celestial pole with a continuous
+  Axis-2 coordinate derived from DEC and OnStep's authoritative pier side.
+- Shift RA by 12 hours exactly once when the coordinate representation changes.
+- Continue subsequent west-side Axis-2 jogs without repeating that RA shift.
+
+## 0.6.5 - 2026-10-20
+
+- Tolerate only the transient secondary INDI pier-side conflict produced by a
+  terrestrial DEC coordinate fold.
+- Continue to require the authoritative OnStep `:GU#` pier side to remain
+  unchanged throughout the move and require both sources to agree at rest.
+
+## 0.6.4 - 2026-10-20
+
+- Treat terrestrial DEC jogs as continuous mechanical Axis-2 motion.
+- Fold targets through the celestial poles into legal RA/DEC coordinates.
+- Apply the altitude floor, rather than astronomical DEC bounds, to terrestrial jogs.
+
+## 0.6.3 - 2026-10-20
+
+- Raised the maximum finite RA/DEC axis jog from 10 to 15 degrees.
+- Kept projected altitude and configured DEC target bounds mandatory for the
+  larger request.
+- Added regression coverage for the inclusive 15-degree boundary and rejection
+  above it.
+- Preserve a freshly received property acknowledgement when the INDI peer closes
+  immediately after sending it, while still failing promptly if no newer
+  property was received.
 
 ## 0.6.2 - 2026-10-20
 
