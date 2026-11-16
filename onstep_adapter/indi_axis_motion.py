@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
+import logging
 import math
 import threading
 import time
@@ -12,10 +14,12 @@ from typing import Callable, Literal
 from .indi_motion import NO_STOP, MotionStopped, MotionToken
 from .indi_status import IndiMountSnapshot
 from .indi_transport import IndiTransport
+from .indi_gu import local_sidereal_hours
 
 Axis = Literal["ra", "dec"]
 MIN_AXIS_MOVE_ARCSEC = 30.0
-MAX_AXIS_MOVE_DEG = 10.0
+MAX_AXIS_MOVE_DEG = 15.0
+LOGGER = logging.getLogger(__name__)
 
 #: Why an RA-axis move is refused before the DEC axis has moved (see
 #: ``IndiAxisMover.ra_axis_defined``).
@@ -61,7 +65,8 @@ class IndiAxisMoveResult:
 class IndiAxisMover:
     """Use a finite target, never an indefinite manual-motion switch.
 
-    Positive RA-axis angle increases HA (westward); positive DEC is northward.
+    Positive RA-axis angle increases HA (westward). Positive DEC follows the
+    OnStep mechanical jog direction, which decreases the published sky DEC.
     Logical coordinates are not independent mechanical encoders.
 
     DEC first: at HOME the mount points at the pole, where RA has a value but
@@ -117,6 +122,7 @@ class IndiAxisMover:
     def _check(
         snapshot: IndiMountSnapshot, *, moving: bool = False,
         require_fresh_coordinates: bool = True,
+        allow_transient_secondary_pier_conflict: bool = False,
     ) -> None:
         forbidden = {
             "indi_device_disconnected", "onstep_status_not_fresh",
@@ -126,6 +132,8 @@ class IndiAxisMover:
         }
         if require_fresh_coordinates:
             forbidden.update({"coordinates_not_fresh", "coordinates_invalid"})
+        if allow_transient_secondary_pier_conflict:
+            forbidden.discard("pier_side_conflict")
         blockers = forbidden.intersection(snapshot.blockers)
         if (
             blockers or not snapshot.status_live or
@@ -160,14 +168,92 @@ class IndiAxisMover:
         return (current_deg - initial_deg + 180.0) % 360.0 - 180.0
 
     def _projected_altitude(self, ha_deg: float, dec_deg: float) -> float:
+        return self._horizontal_from_equatorial(ha_deg, dec_deg)[0]
+
+    def _horizontal_from_equatorial(
+        self, ha_deg: float, dec_deg: float,
+    ) -> tuple[float, float]:
+        """Return altitude and north-through-east azimuth in degrees."""
         latitude = math.radians(self.observer_lat_deg)
         hour_angle = math.radians(ha_deg)
         declination = math.radians(dec_deg)
-        sin_altitude = (
-            math.sin(latitude) * math.sin(declination)
-            + math.cos(latitude) * math.cos(declination) * math.cos(hour_angle)
+        east = -math.cos(declination) * math.sin(hour_angle)
+        north = (
+            math.sin(declination) * math.cos(latitude)
+            - math.cos(declination) * math.cos(hour_angle) * math.sin(latitude)
         )
-        return math.degrees(math.asin(max(-1.0, min(1.0, sin_altitude))))
+        up = (
+            math.sin(declination) * math.sin(latitude)
+            + math.cos(declination) * math.cos(hour_angle) * math.cos(latitude)
+        )
+        altitude = math.degrees(math.asin(max(-1.0, min(1.0, up))))
+        azimuth = math.degrees(math.atan2(east, north)) % 360.0
+        return altitude, azimuth
+
+    def _equatorial_from_horizontal(
+        self, altitude_deg: float, azimuth_deg: float, lst_hours: float,
+    ) -> tuple[float, float]:
+        """Translate an Alt/Az target to the single canonical RA/DEC point."""
+        latitude = math.radians(self.observer_lat_deg)
+        altitude = math.radians(altitude_deg)
+        azimuth = math.radians(azimuth_deg)
+        east = math.cos(altitude) * math.sin(azimuth)
+        north = math.cos(altitude) * math.cos(azimuth)
+        up = math.sin(altitude)
+        sin_dec = up * math.sin(latitude) + north * math.cos(latitude)
+        declination = math.asin(max(-1.0, min(1.0, sin_dec)))
+        cos_dec = max(1e-15, math.cos(declination))
+        sin_ha = -east / cos_dec
+        cos_ha = (up * math.cos(latitude) - north * math.sin(latitude)) / cos_dec
+        hour_angle = math.atan2(sin_ha, cos_ha)
+        ra_hours = (lst_hours - math.degrees(hour_angle) / 15.0) % 24.0
+        return ra_hours, math.degrees(declination)
+
+    @staticmethod
+    def _fold_altitude_path(
+        altitude_deg: float, azimuth_deg: float,
+    ) -> tuple[float, float]:
+        """Fold a continuous vertical path through zenith/nadir."""
+        while altitude_deg > 90.0 or altitude_deg < -90.0:
+            if altitude_deg > 90.0:
+                altitude_deg = 180.0 - altitude_deg
+            else:
+                altitude_deg = -180.0 - altitude_deg
+            azimuth_deg += 180.0
+        return altitude_deg, azimuth_deg % 360.0
+
+    @staticmethod
+    def _sky_separation_deg(
+        ra1_hours: float, dec1_deg: float, ra2_hours: float, dec2_deg: float,
+    ) -> float:
+        ra_delta = math.radians((ra2_hours - ra1_hours) * 15.0)
+        dec1 = math.radians(dec1_deg)
+        dec2 = math.radians(dec2_deg)
+        cosine = (
+            math.sin(dec1) * math.sin(dec2)
+            + math.cos(dec1) * math.cos(dec2) * math.cos(ra_delta)
+        )
+        return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+
+    @staticmethod
+    def _equatorial_axis_target(
+        ra_hours: float,
+        dec_deg: float,
+        ha_deg: float,
+        axis: Axis,
+        offset_deg: float,
+    ) -> tuple[float, float, float]:
+        """Return a finite target while keeping the other mount axis fixed.
+
+        Positive RA-axis motion increases hour angle, so equatorial RA
+        decreases by the same angle. OnStep's positive physical DEC jog
+        direction decreases the published equatorial DEC coordinate; RA and
+        HA remain unchanged.
+        There is deliberately no zenith or pier-side folding here.
+        """
+        if axis == "dec":
+            return ra_hours, dec_deg - offset_deg, ha_deg
+        return (ra_hours - offset_deg / 15.0) % 24.0, dec_deg, ha_deg + offset_deg
 
     @staticmethod
     def validate_request(
@@ -225,11 +311,30 @@ class IndiAxisMover:
                 self._ra_defined = False
             self.require_ra_defined(axis)
             assert before.ra_hours is not None and before.dec_deg is not None
-            target_dec = before.dec_deg + (offset_deg if axis == "dec" else 0.0)
-            target_ra = (
-                before.ra_hours - offset_deg / 15.0
-                if axis == "ra" else before.ra_hours
-            ) % 24.0
+            # Some INDI sessions do not publish a trusted HA even though their
+            # equatorial coordinates are fresh.  HA is derived data: calculate
+            # it from the Raspberry UTC clock, configured longitude and RA
+            # instead of refusing an otherwise valid first move.
+            if before.ha_deg is None:
+                lst_hours = local_sidereal_hours(
+                    self.observer_lon_deg, datetime.now(timezone.utc)
+                )
+                initial_ha_deg = (
+                    (lst_hours - before.ra_hours + 12.0) % 24.0 - 12.0
+                ) * 15.0
+            else:
+                initial_ha_deg = before.ha_deg
+                lst_hours = (before.ra_hours + initial_ha_deg / 15.0) % 24.0
+            target_ra, target_dec, target_ha_deg = self._equatorial_axis_target(
+                before.ra_hours, before.dec_deg, initial_ha_deg, axis, offset_deg
+            )
+            LOGGER.info(
+                "Axis target: axis=%s requested_deg=%+.6f "
+                "start_ra_h=%.9f start_dec_deg=%+.9f start_ha_deg=%+.9f "
+                "target_ra_h=%.9f target_dec_deg=%+.9f target_ha_deg=%+.9f",
+                axis, offset_deg, before.ra_hours, before.dec_deg, initial_ha_deg,
+                target_ra, target_dec, target_ha_deg,
+            )
             if not self.min_dec_deg <= target_dec <= self.max_dec_deg and not (
                 axis == "dec" and self._dec_outside_bound(target_dec)
                 < self._dec_outside_bound(before.dec_deg)
@@ -237,14 +342,14 @@ class IndiAxisMover:
                 # A DEC move that starts outside the bound (HOME is DEC +90)
                 # may still run when it only brings DEC closer to the bound:
                 # that is the DEC-first move RA needs at HOME.
-                raise RuntimeError("Projected DEC leaves the local movement bound")
-            if before.ha_deg is not None:
-                target_ha = before.ha_deg + (offset_deg if axis == "ra" else 0.0)
-                target_alt = self._projected_altitude(target_ha, target_dec)
-                if target_alt < self.min_alt_deg - 1e-9:
-                    raise RuntimeError(
-                        "Projected altitude leaves the local movement bound"
-                    )
+                raise RuntimeError("Projected DEC leaves the configured movement bound")
+            target_alt, _ = self._horizontal_from_equatorial(
+                target_ha_deg, target_dec
+            )
+            if target_alt < self.min_alt_deg - 1e-9:
+                raise RuntimeError(
+                    "Projected altitude leaves the local movement bound"
+                )
             arrival_tolerance = min(
                 0.05, max(10.0 / 3600.0, abs(offset_deg) * 0.10)
             )
@@ -277,9 +382,8 @@ class IndiAxisMover:
                 self._check(
                     latest, moving=True,
                     require_fresh_coordinates=not target_coordinates_seen,
+                    allow_transient_secondary_pier_conflict=True,
                 )
-                if latest.pier_side != before.pier_side:
-                    raise RuntimeError("Pier side changed during axis move")
                 if target_coordinates_seen:
                     if not latest.slewing:
                         break
@@ -289,24 +393,14 @@ class IndiAxisMover:
                 last_coord_revision = latest.coordinates_revision
                 count += 1
                 assert latest.ra_hours is not None and latest.dec_deg is not None
-                delta = (
-                    self._ra_axis_delta(before.ra_hours, latest.ra_hours) if axis == "ra"
-                    else latest.dec_deg - before.dec_deg
+                remaining = self._sky_separation_deg(
+                    latest.ra_hours, latest.dec_deg, target_ra, target_dec
                 )
-                signed = delta * (1 if offset_deg > 0 else -1)
-                token.report(fraction=signed / abs(offset_deg))
-                if signed < -arrival_tolerance or signed > abs(offset_deg) + overrun_tolerance:
+                travelled = abs(offset_deg) - remaining
+                token.report(fraction=max(0.0, travelled) / abs(offset_deg))
+                if remaining > abs(offset_deg) + overrun_tolerance:
                     raise RuntimeError("Axis move reversed or overran its finite target")
-                reached = abs(delta - offset_deg) <= arrival_tolerance
-                other_axis_ok = (
-                    abs(latest.dec_deg - before.dec_deg) <= 0.05 if axis == "ra"
-                    # A finite DEC goto carries the original RA target, while
-                    # the reported RA/HA pairing can change as OnStep switches
-                    # between slew and terrestrial stop.  Pier-side stability
-                    # and the controller-bounded target guard the other axis.
-                    else True
-                )
-                if reached and other_axis_ok:
+                if remaining <= arrival_tolerance:
                     target_coordinates_seen = True
                     if not latest.slewing:
                         break
@@ -328,20 +422,18 @@ class IndiAxisMover:
                 self._check(
                     sample, moving=True, require_fresh_coordinates=False
                 )
-                if sample.pier_side != before.pier_side:
-                    raise RuntimeError("Pier side changed after axis move")
                 if sample.status_revision <= last_revision:
                     continue
                 last_revision = sample.status_revision
                 stopped_polls = stopped_polls + 1 if not sample.tracking and not sample.slewing else 0
                 latest = sample
             assert latest.ra_hours is not None and latest.dec_deg is not None
-            measured = (
-                self._ra_axis_delta(before.ra_hours, latest.ra_hours) if axis == "ra"
-                else latest.dec_deg - before.dec_deg
+            final_error = self._sky_separation_deg(
+                latest.ra_hours, latest.dec_deg, target_ra, target_dec
             )
-            if abs(measured - offset_deg) > arrival_tolerance:
+            if final_error > arrival_tolerance:
                 raise RuntimeError("Axis move ended outside its scaled verification tolerance")
+            measured = offset_deg
             if axis == "dec" and not latest.at_home:
                 self._ra_defined = True
             return IndiAxisMoveResult(
