@@ -56,7 +56,7 @@ class IndiAxisMotionTests(unittest.TestCase):
         mover = IndiAxisMover(
             fake, "LX200 OnStep", 50.336, 8.533, lambda: next(sequence),
             lambda: stops.append("emergency_stop"),
-            monotonic=lambda: 0.0, **movement_limits,
+            monotonic=lambda: 0.0, single_axis=False, **movement_limits,
         )
         if ra_defined:
             mover._ra_defined = True
@@ -465,7 +465,7 @@ class DecFirstTests(unittest.TestCase):
         stops = []
         mover = IndiAxisMover(
             fake, "LX200 OnStep", 50.336, 8.533, lambda: next(sequence),
-            lambda: stops.append("emergency_stop"), monotonic=lambda: 0.0,
+            lambda: stops.append("emergency_stop"), monotonic=lambda: 0.0, single_axis=False,
         )
         return mover, fake, stops
 
@@ -573,6 +573,7 @@ class StationaryDriftTests(unittest.TestCase):
         mover = IndiAxisMover(
             fake, "LX200 OnStep", 50.336, 8.533, lambda: next(sequence),
             lambda: stops.append("emergency_stop"), monotonic=lambda: clock[-1],
+            single_axis=False,
         )
         mover._ra_defined = True
         return mover, fake, stops

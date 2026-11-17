@@ -14,6 +14,7 @@ class SelectiveBuildPy(build_py):
         "onstep_adapter": {
             "__init__",
             "indi_client",
+            "indi_axis_drive",
             "indi_axis_motion",
             "indi_config",
             "indi_gu",

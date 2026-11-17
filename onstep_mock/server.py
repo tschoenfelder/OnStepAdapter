@@ -201,6 +201,7 @@ class SimulatedOnStepServer:
         now = time.monotonic()
         with self._lock:
             mount = self._mount
+            mount.ns_dec_sign = None
             mount.motion, mount.target_kind = "IDLE", None
             mount.manual_ns = mount.manual_we = 0
             if ha_h is not None:
