@@ -25,7 +25,11 @@ from .indi_mount import IndiMount
 from .indi_status import IndiMountSnapshot, IndiStatusReader
 from .indi_stop import IndiStopResult, stop_mount_via_indi
 from .indi_tracking import IndiTrackingResult, enable_tracking_via_indi
-from .indi_terrestrial import IndiTerrestrialController, IndiTerrestrialMoveResult
+from .indi_terrestrial import (
+    IndiTerrestrialController,
+    IndiTerrestrialMoveResult,
+    IndiTerrestrialRecoveryResult,
+)
 from .indi_transport import IndiTransport
 from .indi_gu import decode_gu
 from .meridian_policy import MeridianPolicy, derive_meridian_policy
@@ -427,6 +431,64 @@ class OnStepIndiClient:
             raise ConnectionError("INDI client is not connected")
         return self._terrestrial_controller.move_away_from_north_horizon(
             step_deg, timeout_s=timeout_s
+        )
+
+    def move_terrestrial_ra_axis(
+        self, offset_deg: float, *, timeout_s: float = 45.0,
+    ) -> IndiTerrestrialMoveResult:
+        if self._terrestrial_controller is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        return self._terrestrial_controller.move_ra_axis(
+            offset_deg, timeout_s=timeout_s
+        )
+
+    def recover_terrestrial_ra(
+        self, direction: str, duration_s: float,
+    ) -> IndiTerrestrialRecoveryResult:
+        if self._terrestrial_controller is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        return self._terrestrial_controller.recover_ra_timed(
+            direction, duration_s
+        )
+
+    def recover_terrestrial_dec(
+        self, direction: str, duration_s: float,
+    ) -> IndiTerrestrialRecoveryResult:
+        if self._terrestrial_controller is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        return self._terrestrial_controller.recover_dec_timed(
+            direction, duration_s
+        )
+
+    def move_terrestrial_ra_timed(
+        self, direction: str, duration_s: float,
+    ) -> IndiTerrestrialRecoveryResult:
+        if self._terrestrial_controller is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        return self._terrestrial_controller.move_ra_timed(direction, duration_s)
+
+    def move_terrestrial_dec_timed(
+        self, direction: str, duration_s: float,
+    ) -> IndiTerrestrialRecoveryResult:
+        if self._terrestrial_controller is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        return self._terrestrial_controller.move_dec_timed(direction, duration_s)
+
+    def move_terrestrial_axis_deg(
+        self, axis: str, offset_deg: float, *, timeout_s: float = 30.0,
+        poll_s: float = 0.1,
+    ) -> IndiAxisMoveResult:
+        """Execute a finite same-pier target in an authorized terrestrial session."""
+        if (
+            self._terrestrial_controller is None or self._axis_mover is None or
+            not self._transport.is_open
+        ):
+            raise ConnectionError("INDI client is not connected")
+        return self._terrestrial_controller.run_finite_axis_jog(
+            lambda: self._axis_mover.move(
+                axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s,
+                mode=AxisMotionMode.TERRESTRIAL,
+            )
         )
 
     def _require_astronomical_if_managed(self) -> None:

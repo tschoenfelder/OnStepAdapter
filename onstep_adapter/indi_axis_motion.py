@@ -168,7 +168,11 @@ class IndiAxisMover:
                 if axis == "ra" else before.ra_hours
             ) % 24.0
             if not self.min_dec_deg <= target_dec <= self.max_dec_deg:
-                raise RuntimeError("Projected DEC leaves the local movement bound")
+                raise RuntimeError(
+                    f"Projected DEC target {target_dec:+.3f} deg from "
+                    f"{before.dec_deg:+.3f} deg is outside configured bounds "
+                    f"{self.min_dec_deg:+.3f}..{self.max_dec_deg:+.3f} deg"
+                )
             if before.ha_deg is not None:
                 target_ha = before.ha_deg + (offset_deg if axis == "ra" else 0.0)
                 target_alt = self._projected_altitude(target_ha, target_dec)

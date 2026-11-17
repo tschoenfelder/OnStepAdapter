@@ -5,7 +5,9 @@ host = "127.0.0.1"
 port = 7624
 device = "LX200 OnStep"
 safe_meridian_flip_via_home = true
-# Remains false until the separate supervised INDI HOME H-status test.
+# The investigation confirmed INDI raw-H arrival on this rig. Keep production
+# HOME motion disabled until the adapter implements the new routed-operation
+# contract and its production regression suite passes.
 home_motion_enabled = false
 # PARK/UNPARK is physically exercised and required by terrestrial transitions.
 park_motion_enabled = true
@@ -41,12 +43,16 @@ state_file = "/home/astro/.config/onstep_adapter/mode_state.json"
 step_deg = 10.0
 max_step_deg = 10.0
 # With movement.min_alt_deg=-2, this leaves a final effective floor of 0 deg.
-horizon_margin_deg = 2.0
+horizon_margin_deg = 0.0
 # Request STOP before the estimated endpoint and wait for stable telemetry.
 brake_lead_deg = 0.5
 stop_hold_seconds = 3.0
 # Standard INDI maximum slew-rate switch used by the supervised v10.22 path.
 slew_rate_element = "9" # highest rate exposed by tested indi_lx200_OnStep
+# Explicit operator-observed Axis-1 recovery is time-bounded, not degree-based.
+# It may run despite an OnStep limit/fault so the operator can move away from it.
+ra_recovery_max_seconds = 2.0
+stall_timeout_seconds = 3.0
 
 [focuser]
 # INDI currently reports FOCUS_MAX=100000. Keep this lower conservative

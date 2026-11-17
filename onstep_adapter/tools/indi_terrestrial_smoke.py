@@ -21,12 +21,12 @@ def _confirm(message: str) -> bool:
         print("Only ENTER confirms. Type ESC then ENTER to abort; no command was sent.")
 
 
-def _run(client, step_deg: float | None) -> int:
+def _run(client, jog_seconds: float) -> int:
     print("This test can move the mount. Maintain line of sight and cable clearance.")
     print("ESC or Ctrl-C sends STOP and starts no automatic PARK/HOME motion.")
     print(
         "Purpose: verify an explicit PARK -> TERRESTRIAL -> UNPARK transition, "
-        "then operator-requested finite north-horizon steps through INDI."
+        "then operator-requested timed DEC recovery nudges through INDI."
     )
     initial = client.mount.get_status()
     print(
@@ -60,16 +60,19 @@ def _run(client, step_deg: float | None) -> int:
     if not unparked.unparked_confirmed:
         return 1
 
-    print("w=toward north horizon, s=away, x=STOP, p=PARK, a=ASTRONOMICAL, q=quit")
+    print(
+        "w=timed DEC north, s=timed DEC south, x=STOP, p=PARK, "
+        "a=ASTRONOMICAL, q=quit"
+    )
     while True:
         command = _prompt("terrestrial> ")
         if command in {"\x1b", "x", "q"}:
             print(client.mount.stop())
             return 2 if command == "\x1b" else 0
         if command == "w":
-            print(client.mount.move_toward_north_horizon(step_deg))
+            print(client.mount.move_terrestrial_dec_timed("north", jog_seconds))
         elif command == "s":
-            print(client.mount.move_away_from_north_horizon(step_deg))
+            print(client.mount.move_terrestrial_dec_timed("south", jog_seconds))
         elif command == "p":
             print(client.mount.park())
         elif command == "a":
@@ -84,13 +87,13 @@ def main() -> int:
         description="Supervised finite terrestrial movement through local INDI"
     )
     parser.add_argument("--config", required=True)
-    parser.add_argument("--step-deg", type=float)
+    parser.add_argument("--jog-seconds", type=float, default=0.5)
     args = parser.parse_args()
     config = load_indi_config(args.config)
 
     with OnStepClient(config=config, auto_supervise=False) as client:
         try:
-            return _run(client, args.step_deg)
+            return _run(client, args.jog_seconds)
         except KeyboardInterrupt:
             print(client.mount.stop())
             return 130

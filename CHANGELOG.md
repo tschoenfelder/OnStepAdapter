@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.7.11 - Unreleased
+
+- Re-arm both INDI manual-motion vectors with an explicit all-Off update before
+  every direction command. This fixes repeated same-direction RA or DEC jogs
+  being accepted by INDI without starting a new movement.
+- Log bounded RA start, cumulative progress, STOP request, completion and
+  timeout position in the persistent monitor log.
+- Decode the final OnStep `:GU#` general-error digit. Axis-1 motion now reports
+  an OnStep under-pole stop (`6`) immediately instead of waiting for the
+  overall JOG timeout.
+- Wait for a published all-Off manual-motion vector before selecting the next
+  direction, and wait for the selected direction to become On.
+- Log every fresh compact-status sample during controller HOME and PARK so the
+  requested two-stage route can be distinguished from motion performed inside
+  OnStep's HOME sensor search.
+
+## 0.7.10 - Unreleased
+
+- Replace terrestrial RA sky-target goto with fixed-direction INDI Axis-1
+  motion. `A` commands east and `D` commands west; short signed RA segments,
+  DEC drift, altitude, and verified STOP bound the move.
+- Refuse and stop immediately if Axis-1 feedback runs opposite to the requested
+  direction instead of retrying or changing direction automatically.
+
+## 0.7.9
+
+- Report the current DEC, projected DEC target, and configured DEC bounds when
+  refusing a finite terrestrial target jog.
+- Restore bounded terrestrial Axis-2 paths toward or away from the northern
+  horizon. Travel is accumulated from consecutive short sky arcs so the pole's
+  12-hour RA transition and logical DEC reversal do not undercount motion.
+- Apply `movement.min_alt_deg` to this Axis-2 path without treating logical
+  DEC `+/-80` as a mechanical pole-crossing limit.
+
+## 0.7.8
+
+- Accept unchanged but present logical RA/DEC when raw and standard INDI PARK
+  evidence is reconciled, stationary, fault-free, and explicitly confirmed.
+  The LX200 driver need not republish coordinates merely because PARK completed.
+- Continue to reject missing/non-finite coordinates, motion, tracking, limits,
+  or conflicting PARK evidence before terrestrial UNPARK authorization.
+
+## 0.7.7 - Unreleased
+
+- Restore healthy terrestrial `1`, `5`, and `10` degree RA/DEC JOG through
+  OnStep's finite coordinate-target operation after a retained PARK -> UNPARK
+  session; verify same-pier arrival and tracking-off completion.
+- Keep `0.5`, `1`, and `2` second manual-axis commands exclusive to explicit
+  OnStep fault/limit recovery. A failed normal jog is never retried as recovery.
+- Continue to reject the removed continuous RA/DEC-displacement estimator;
+  logical coordinates are not independent mechanical-axis encoder feedback.
+
+## 0.7.6 - Unreleased
+
+- Add explicit time-bounded DEC recovery nudges with verified STOP before and
+  after motion, including while OnStep reports a limit or fault.
+- Disable normal terrestrial DEC-by-degree motion after physical testing showed
+  celestial DEC could remain near 45 degrees across roughly 135 degrees of
+  mechanical Axis-2 travel at a pole transition.
+- Recovery remains an operator-observed directional action and makes no
+  angular-distance claim.
+- Keep healthy `UNPARKED` terrestrial sessions in normal timed-JOG mode.
+  Recovery is selected only for a freshly reported OnStep fault or limit and
+  is never entered merely because the mount is unparked.
+
+## 0.7.4 - Unreleased
+
+- Keep ordinary terrestrial RA-by-degree movement fail-closed because the
+  tested INDI feedback cannot safely bound mechanical Axis-1 travel.
+- Add explicit, operator-observed RA recovery nudges bounded to 0.1 through
+  2 seconds by default, with verified STOP before and after every request.
+- Permit only that recovery primitive while OnStep reports a limit or fault;
+  PARK, HOME, tracking, guiding, slewing and conflicting status remain blocked.
+- Do not require a PARK reference for recovery, so it remains available after
+  an application restart while PARK itself is refused by the controller.
+
 ## 0.7.0 - Unreleased
 
 - Added shared first-class astronomical/terrestrial mode arbitration.

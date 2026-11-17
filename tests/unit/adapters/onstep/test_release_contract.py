@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 def test_public_release_surface() -> None:
-    assert __version__ == "0.7.0"
+    assert __version__ == "0.7.11"
     assert OnStepClient is not None
     assert OnStepMount is not None
     assert OnStepFocuser is not None
@@ -55,12 +55,12 @@ def test_standalone_packaging_does_not_ship_smart_telescope_namespace() -> None:
         assert "smart_telescope." not in text
 
 
-def test_070_wheel_manifest_is_indi_only() -> None:
+def test_074_wheel_manifest_is_indi_only() -> None:
     root = Path(__file__).resolve().parents[4]
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     setup = (root / "setup.py").read_text(encoding="utf-8")
 
-    assert 'version = "0.7.0"' in pyproject
+    assert 'version = "0.7.11"' in pyproject
     assert 'onstep_adapter = ["config.indi.example.toml"]' in pyproject
     assert "pyserial" not in pyproject
     for excluded in ('"client"', '"serial_bus"', '"mount"', '"focuser"'):

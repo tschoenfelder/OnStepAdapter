@@ -1,9 +1,9 @@
-# OnStepAdapter 0.7.0 SDK
+# OnStepAdapter 0.7.6 SDK
 
 This release is an in-process INDI client, not a serial-port owner. It uses
 the unchanged `LX200 OnStep` device in the Raspberry's local `indiserver`.
 Python 3.13 or newer is required; there are no runtime Python dependencies.
-Install `onstep_adapter-0.7.0-py3-none-any.whl` with `python3 -m pip install`.
+Install `onstep_adapter-0.7.6-py3-none-any.whl` with `python3 -m pip install`.
 
 ## Connection And Cleanup
 
@@ -21,7 +21,7 @@ with OnStepClient(config=config) as client:
 not using the context manager. `close()`
 stops the client's own meridian supervisor and closes its INDI socket; it
 does not disconnect the shared device, stop the server, or evict other apps.
-No serial or raw LX200 fallback ships in the 0.7.0 wheel.
+No serial or raw LX200 fallback ships in the 0.7.6 wheel.
 
 The transport treats the background INDI reader as part of connection health.
 Any unexpected exception or return marks the session failed, wakes property
@@ -104,6 +104,18 @@ reports after a transition and never disturb an already-running safe track.
 If an accepted transition becomes unsafe or cannot be confirmed, emergency
 stop is requested. PARK-record and application-controlled flip operations
 from the former 0.3.5 API remain unavailable.
+
+`go_home()` writes standard INDI `TELESCOPE_HOME.GO`; the unchanged
+`indi_lx200_OnStep` driver translates that to the controller HOME operation.
+It is not an RA/DEC goto. Physical validation on the Terrans rig showed that
+the controller's enabled HOME-sensor procedure can cross the logical HOME
+pose, reverse, and make a slower final approach before publishing raw `H`.
+Consequently, a client route of STOP -> HOME -> PARK contains only those two
+requested destinations even when the physical trace within HOME has an extra
+out-and-back leg. The adapter now logs every fresh HOME and PARK status sample
+so this distinction is auditable. The current INDI properties offer no
+separate direct-logical-HOME command. Replacing HOME with a coordinate-derived
+pose would violate the mechanical-authority rule and is not done.
 
 ## Tracking-Preserving Guide Pulses
 
@@ -188,10 +200,10 @@ decide whether another correction is necessary.
 
 ## Terrestrial Operating Mode
 
-Issue #27 adds a mode boundary above the older coordinate-axis helpers. The
-older `move_dec_axis_deg()` is an absolute sky-target operation and does not
-represent a physical pole-crossing jog. The terrestrial API instead uses
-`TELESCOPE_MOTION_NS` with a finite feedback-controlled stop.
+Issue #27 adds a mode boundary above the coordinate-axis helpers. Normal DEC
+JOG uses bounded `TELESCOPE_MOTION_NS`, fresh coordinate feedback, cumulative
+short-arc travel, an altitude floor, and verified STOP. Timed movement without
+coordinate feedback remains reserved for short, operator-observed recovery.
 
 Configure one shared state file for all Python applications on the Raspberry:
 
@@ -200,10 +212,12 @@ Configure one shared state file for all Python applications on the Raspberry:
 state_file = "/home/astro/.config/onstep_adapter/mode_state.json"
 step_deg = 10.0
 max_step_deg = 10.0
-horizon_margin_deg = 2.0
+horizon_margin_deg = 0.0
 brake_lead_deg = 0.5
 stop_hold_seconds = 3.0
 slew_rate_element = "9"
+ra_recovery_max_seconds = 2.0
+stall_timeout_seconds = 3.0
 ```
 
 The caller must explicitly execute `park()`, verify `confirmed`, call
@@ -219,16 +233,11 @@ replace. This is the strongest shared arbitration available without modifying
 the INDI driver. It does not coordinate clients on another host that do not
 share the state file; such deployments must not use terrestrial mode.
 
-Toward the northern horizon maps to `MOTION_NORTH` on the near pole branch and
-`MOTION_SOUTH` after the estimated 12-hour RA branch change; outward movement
-reverses that mapping. A residual of at most 4 hours is near, at least 8 hours
-is far, and the ambiguous interval is refused. The estimate corrects the PARK
-RA reference for sidereal drift but is not independent Axis-2 telemetry.
-Motion uses the configured INDI slew-rate element, stops early by the braking
-allowance, and does not complete until coordinates are stable for the hold
-period. PARK/HOME/mode changes are blocked while moving or stopping; emergency
-stop remains available. Horizon clipping uses the configured movement floor
-plus margin. No exact high-speed endpoint or encoder accuracy is claimed.
+The north-horizon Axis-2 methods use short consecutive coordinate arcs so a
+12-hour RA change and DEC reversal at the pole cannot alias a long mechanical
+path into a short endpoint displacement. PARK/HOME/mode changes are blocked
+while a bounded path or recovery motion is active; emergency stop remains
+available. No encoder accuracy is claimed.
 
 The tested `indi_lx200_OnStep` names its slew-rate elements `0` through `9`,
 not `SLEW_MAX`; `9` is its highest rate. For compatibility with earlier 0.7.0
@@ -237,23 +246,67 @@ element actually advertised by the driver. The selected element is returned
 in `IndiTerrestrialMoveResult.slew_rate_element`.
 
 On the tested Terrans installation, `indi_lx200_OnStep` exposes RA/DEC but no
-standard `HORIZONTAL_COORD`. In that case the adapter derives geometric ALT/AZ
-from RA/DEC, the Raspberry clock, and `[observer]` location. A confirmed
-stationary terrestrial UNPARK creates the start anchor, so an unchanged INDI
-property does not become unsafe merely because the driver has not republished
-it while idle. Once motion starts, fresh RA/DEC updates and a verified stable
-STOP are mandatory. Another client changing the position invalidates the
-anchor unless current telemetry independently passes the live preflight.
-The unchanged OnStep status vector may remain cached while its value has not
-changed, so it is not treated as a per-second motion heartbeat. Fresh RA/DEC
-updates provide that heartbeat. A newly published fault, limit, PARK,
-tracking, disconnect, or conflicting state still aborts the move immediately.
+independent mechanical Axis-1/2 position. The adapter can therefore verify the
+finite logical target and unchanged pier side, but not physical encoder travel.
+A newly published fault, limit, PARK, tracking, disconnect, or conflicting
+state aborts the move immediately.
+
+### Finite JOG And Timed Axis Recovery
+
+Axis-1 uses fixed-direction INDI manual motion with cumulative short RA
+segments, a configurable no-progress deadline and verified STOP. Axis-2 runs
+bounded manual motion and
+accumulates short consecutive sky arcs until the requested path is reached:
+
+```python
+result = client.mount.move_terrestrial_ra_deg(-10.0)  # east
+result = client.mount.move_toward_north_horizon(5.0)
+result = client.mount.move_away_from_north_horizon(5.0)
+```
+
+Requests are bounded to 1 through 10 degrees by the monitor controls and must
+finish with tracking off and verified STOP. Axis-2 distance is estimated from
+INDI sky-coordinate telemetry, not an independent mechanical encoder.
+Axis-1 also checks OnStep's raw general-error digit on every sample. Code `6`
+means the controller stopped at its under-pole guard; it is reported
+immediately rather than being misdiagnosed as a JOG timeout. A permissible ALT
+does not override this mechanical controller guard.
+
+For recovery from a limit or fault, an operator may request one short,
+supervised nudge instead:
+
+```python
+result = client.mount.recover_terrestrial_ra("east", 0.5)
+result = client.mount.recover_terrestrial_dec("north", 0.5)
+```
+
+This recovery primitive requires terrestrial mode, fresh raw status,
+UNPARKED, tracking off, and no current slew or guide pulse. It performs and
+verifies STOP before the nudge, issues standard INDI manual RA motion, and
+guarantees another verified STOP after the configured duration. Existing
+OnStep limit and fault flags are deliberately allowed for this operation only.
+No PARK reference is required, so recovery remains possible after the client
+or monitor restarts while PARK itself is refused. A disconnect, PARK conflict,
+unknown/conflicting pier side, PARKED/HOME state, tracking, guiding, or slew
+still refuses the command.
+
+`duration_s` is time, not degrees. The adapter cannot infer the safe recovery
+direction from RA/DEC and cannot prove angular travel. Begin with the smallest
+duration under direct line-of-sight supervision; use the independent STOP at
+any concern. Normal astronomical and terrestrial motion remains blocked while
+the controller reports a fault or limit.
+
+Finite JOG requires the retained session reference and rejects every OnStep
+fault or limit. Recovery is applicable only when fresh OnStep status explicitly
+reports a fault or limit. UNPARKED by itself never selects recovery, and a
+failed normal jog is never retried as recovery automatically.
 
 After mocked validation, the deferred supervised hardware acceptance command is:
 
 ```bash
 python3 -m onstep_adapter.tools.indi_terrestrial_smoke \
-  --config ~/.config/onstep_adapter/config.toml
+  --config ~/.config/onstep_adapter/config.toml \
+  --jog-seconds 0.5
 ```
 
 It requires confirmation before explicit PARK, mode selection and UNPARK.
@@ -265,7 +318,9 @@ redundant PARK command. Matching raw-`P` and standard INDI PARK evidence is
 then trusted locally for at most 30 seconds. Programmatic `park()` remains
 fail-closed unless the caller passes `operator_confirmed_existing_park=True`
 as the result of that physical confirmation.
-Each `w` or `s` command is one bounded step. `x`, ESC and Ctrl-C request a
+Each `w` or `s` command is one time-bounded DEC recovery nudge with no angular
+claim. The operator must choose the direction under direct observation. `x`,
+ESC and Ctrl-C request a
 verified stop and never start automatic PARK/HOME cleanup. `p` explicitly
 parks; only then may `a` consume that fresh authorization to return to
 astronomical mode. This physical UAT remains outstanding.
@@ -274,7 +329,10 @@ astronomical mode. This physical UAT remains outstanding.
 
 `mount.move_ra_axis_deg(angle)` and `mount.move_dec_axis_deg(angle)` issue a
 finite INDI coordinate target, not an indefinite manual-motion switch. Positive
-RA increases hour angle (westward); positive DEC moves northward. Both require
+RA increases hour angle (westward); positive DEC moves northward. These
+coordinate-target operations are restricted to astronomical operating mode.
+Terrestrial RA is fail-closed because RA/DEC cannot independently verify
+mechanical Axis-1 travel on the tested INDI path. Both require
 fresh unparked status, tracking off, no slew/fault/limit, a stable pier side,
 and a request from 30 arcseconds through 10 degrees. HOME and time/site authority are not
 prerequisites for this terrestrial/manual operation. DEC targets are limited

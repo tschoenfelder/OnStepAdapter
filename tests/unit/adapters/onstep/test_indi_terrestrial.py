@@ -1,4 +1,3 @@
-from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -27,7 +26,7 @@ def sample(*, ra=10.0, dec=20.0, alt=40.0, tracking=False, **changes):
         park_evidence_consistent=False,
         altitude_deg=alt, ra_hours=ra, dec_deg=dec, parked=False,
         at_home=False, slewing=False, guiding=False, tracking=tracking,
-        at_limit=False, blockers=(),
+        at_limit=False, blockers=(), raw_status="nNpeEW280",
     )
     values.update(changes)
     return SimpleNamespace(**values)
@@ -41,6 +40,8 @@ class Mode:
 class Transport:
     def __init__(self):
         self.commands = []
+        self.revision = 0
+        self.properties = {}
 
     def get_property(self, device, name):
         assert name == "TELESCOPE_SLEW_RATE"
@@ -51,6 +52,23 @@ class Transport:
 
     def issue_switch(self, device, name, element):
         self.commands.append(("issue", name, element))
+
+    def issue_switches(self, device, name, values):
+        self.commands.append(("issues", name, dict(values)))
+        before_revision = self.revision
+        self.revision += 1
+        self.properties[name] = SimpleNamespace(
+            values={key: "On" if enabled else "Off" for key, enabled in values.items()},
+            state="Busy" if any(values.values()) else "Idle",
+            revision=self.revision,
+        )
+        return before_revision
+
+    def wait_property(self, device, name, *, timeout, after_revision=-1):
+        prop = self.properties.get(name)
+        if prop is None or prop.revision <= after_revision:
+            raise TimeoutError(f"No fresh mocked property {name}")
+        return prop
 
 
 def controller(samples, *, reference_ra=10.0, config=CONFIG):
@@ -80,154 +98,368 @@ def controller(samples, *, reference_ra=10.0, config=CONFIG):
 
 
 @patch("onstep_adapter.indi_terrestrial.time.sleep")
-def test_near_side_toward_horizon_uses_north_and_stops_early(unused_sleep):
+def test_dec_path_accumulates_motion_safely_across_celestial_pole(mocked_sleep):
     mover, transport, stops = controller([
-        sample(), sample(dec=25, alt=35, slewing=True),
-        sample(dec=29.6, alt=30.4, slewing=True),
-        sample(dec=29.7, alt=30.3), sample(dec=29.7, alt=30.3),
-    ])
-    result = mover.move_toward_north_horizon()
-    assert result.indi_direction == "MOTION_NORTH"
-    assert result.commanded_deg == 10
-    assert result.stop_confirmed and result.endpoint_is_estimated
-    assert transport.commands == [
-        ("set", "TELESCOPE_SLEW_RATE", "9"),
-        ("issue", "TELESCOPE_MOTION_NS", "MOTION_NORTH"),
-    ]
-    assert result.slew_rate_element == "9"
-    assert stops == ["stop"]
-
-
-@patch("onstep_adapter.indi_terrestrial.time.sleep")
-def test_far_side_reverses_toward_and_outward_direction(unused_sleep):
-    toward, transport, _ = controller([
-        sample(ra=22), sample(ra=22, dec=25, slewing=True),
-        sample(ra=22, dec=29.6, slewing=True), sample(ra=22, dec=29.7),
-        sample(ra=22, dec=29.7),
-    ])
-    result = toward.move_toward_north_horizon()
-    assert result.pole_branch == "far"
-    assert result.indi_direction == "MOTION_SOUTH"
-
-    away, _, _ = controller([
-        sample(ra=22), sample(ra=22, dec=25, slewing=True),
-        sample(ra=22, dec=29.6, slewing=True), sample(ra=22, dec=29.7),
-        sample(ra=22, dec=29.7),
-    ])
-    assert away.move_away_from_north_horizon().indi_direction == "MOTION_NORTH"
-
-
-@patch("onstep_adapter.indi_terrestrial.time.sleep")
-def test_final_step_is_clipped_to_configured_horizon_margin(unused_sleep):
-    mover, _, _ = controller([
-        sample(alt=5), sample(dec=24.6, alt=0.4, slewing=True),
-        sample(dec=24.7, alt=0.3), sample(dec=24.7, alt=0.3),
-    ])
-    result = mover.move_toward_north_horizon(10)
-    assert result.clipped
-    assert result.commanded_deg == 5
-    assert result.final_altitude_deg == 0.3
-
-
-def test_ambiguous_pole_branch_refuses_without_motion():
-    mover, transport, stops = controller([sample(ra=16)])
-    with pytest.raises(RuntimeError, match="ambiguous"):
-        mover.move_toward_north_horizon()
-    assert transport.commands == [] and stops == []
-
-
-def test_stationary_unpark_anchor_allows_delayed_first_step_preflight():
-    mover, transport, stops = controller([
-        sample(status_live=False, coordinates_live=False, horizontal_live=False),
-    ])
-    with pytest.raises(AssertionError, match="No mocked terrestrial sample remains"):
-        mover.move_toward_north_horizon()
-    assert transport.commands == [
-        ("set", "TELESCOPE_SLEW_RATE", "9"),
-        ("issue", "TELESCOPE_MOTION_NS", "MOTION_NORTH"),
-    ]
-    assert stops == ["stop"]
-
-
-def test_stale_position_different_from_unpark_anchor_refuses():
-    mover, transport, stops = controller([
-        sample(ra=11.0, status_live=False, coordinates_live=False, horizontal_live=False),
-    ])
-    with pytest.raises(RuntimeError, match="Fresh"):
-        mover.move_toward_north_horizon()
-    assert transport.commands == [] and stops == []
-
-
-def test_legacy_slew_max_alias_resolves_to_highest_numeric_driver_rate():
-    legacy = replace(CONFIG, terrestrial_slew_rate_element="SLEW_MAX")
-    mover, transport, stops = controller([
-        sample(), sample(dec=25, alt=35, slewing=True),
-        sample(dec=29.6, alt=30.4, slewing=True),
-        sample(dec=29.7, alt=30.3), sample(dec=29.7, alt=30.3),
-    ], config=legacy)
-
-    result = mover.move_toward_north_horizon()
-
-    assert result.slew_rate_element == "9"
-    assert transport.commands[0] == ("set", "TELESCOPE_SLEW_RATE", "9")
-    assert stops == ["stop"]
-
-
-@patch("onstep_adapter.indi_terrestrial.time.sleep")
-def test_long_move_accepts_unchanged_status_while_coordinates_refresh(unused_sleep):
-    mover, _, stops = controller([
-        sample(),
-        sample(dec=25, alt=35, slewing=True, status_live=False),
-        sample(dec=29.6, alt=30.4, slewing=True, status_live=False),
-        sample(dec=29.7, alt=30.3, status_live=False),
-        sample(dec=29.7, alt=30.3, status_live=False),
+        sample(ra=10.0, dec=85.0, alt=70.0),
+        sample(ra=10.0, dec=89.0, alt=66.0, slewing=True),
+        sample(ra=22.0, dec=87.0, alt=62.0, slewing=True),
+        sample(ra=22.0, dec=85.4, alt=60.4, slewing=True),
+        sample(ra=22.0, dec=85.4, alt=60.4),
     ])
 
-    result = mover.move_toward_north_horizon()
+    result = mover.move_toward_north_horizon(10.0)
 
     assert result.stop_confirmed
+    assert result.pole_branch == "near"
+    assert result.indi_direction == "MOTION_NORTH"
+    assert result.measured_deg == pytest.approx(9.6, abs=0.01)
+    assert result.final_altitude_deg == pytest.approx(60.4)
+    assert transport.commands == [
+        ("set", "TELESCOPE_SLEW_RATE", "9"),
+        ("issues", "TELESCOPE_MOTION_NS", {
+            "MOTION_NORTH": False, "MOTION_SOUTH": False,
+        }),
+        ("issues", "TELESCOPE_MOTION_NS", {
+            "MOTION_NORTH": True, "MOTION_SOUTH": False,
+        }),
+    ]
     assert stops == ["stop"]
 
 
-def test_stale_coordinates_during_motion_trigger_stop():
-    mover, _, stops = controller([
-        sample(),
-        sample(coordinates_live=False, horizontal_live=False, slewing=True),
+@patch("onstep_adapter.indi_terrestrial.time.sleep")
+def test_toward_horizon_reverses_indi_direction_on_far_pole_branch(mocked_sleep):
+    mover, transport, stops = controller([
+        sample(ra=22.0, dec=85.0, alt=60.0),
+        sample(ra=22.0, dec=84.4, alt=59.4, slewing=True),
+        sample(ra=22.0, dec=84.4, alt=59.4),
     ])
 
-    with pytest.raises(RuntimeError, match="coordinate feedback became stale"):
-        mover.move_toward_north_horizon()
+    result = mover.move_toward_north_horizon(1.0)
 
+    assert result.pole_branch == "far"
+    assert result.indi_direction == "MOTION_SOUTH"
+    assert result.measured_deg == pytest.approx(0.6, abs=0.01)
+    assert transport.commands[-1] == (
+        "issues", "TELESCOPE_MOTION_NS",
+        {"MOTION_NORTH": False, "MOTION_SOUTH": True},
+    )
     assert stops == ["stop"]
 
 
 @pytest.mark.parametrize(
-    "unsafe,message",
+    "offset,ra_after,element",
+    [(-1.0, 10.04, "MOTION_EAST"), (1.0, 9.96, "MOTION_WEST")],
+)
+@patch("onstep_adapter.indi_terrestrial.time.sleep")
+def test_ra_axis_uses_opposite_fixed_directions_and_verified_stop(
+    mocked_sleep, offset, ra_after, element,
+):
+    mover, transport, stops = controller([
+        sample(ra=10.0, dec=43.0, alt=60.0),
+        sample(ra=ra_after, dec=43.0, alt=60.0, slewing=True),
+        sample(ra=ra_after, dec=43.0, alt=60.0),
+    ])
+
+    result = mover.move_ra_axis(offset)
+
+    assert result.stop_confirmed
+    assert result.indi_direction == element
+    assert result.measured_deg == pytest.approx(0.6, abs=0.01)
+    assert transport.commands == [
+        ("set", "TELESCOPE_SLEW_RATE", "9"),
+        ("issues", "TELESCOPE_MOTION_WE", {
+            "MOTION_WEST": False, "MOTION_EAST": False,
+        }),
+        ("issues", "TELESCOPE_MOTION_WE", {
+            "MOTION_WEST": element == "MOTION_WEST",
+            "MOTION_EAST": element == "MOTION_EAST",
+        }),
+    ]
+    assert stops == ["stop"]
+
+
+@patch("onstep_adapter.indi_terrestrial.time.sleep")
+def test_ra_axis_wrong_direction_stops_immediately(mocked_sleep):
+    mover, transport, stops = controller([
+        sample(ra=10.0, dec=43.0, alt=60.0),
+        sample(ra=9.96, dec=43.0, alt=60.0, slewing=True),
+    ])
+
+    with pytest.raises(RuntimeError, match="opposite"):
+        mover.move_ra_axis(-1.0)
+
+    assert transport.commands[-1] == (
+        "issues", "TELESCOPE_MOTION_WE",
+        {"MOTION_WEST": False, "MOTION_EAST": True},
+    )
+    assert stops == ["stop"]
+
+
+@patch("onstep_adapter.indi_terrestrial.time.sleep")
+@patch("onstep_adapter.indi_terrestrial.time.monotonic")
+def test_ra_axis_reports_onstep_under_pole_stall_without_waiting_for_timeout(
+    mocked_monotonic, mocked_sleep,
+):
+    config = IndiRuntimeConfig(**{
+        **CONFIG.__dict__, "terrestrial_stall_timeout_seconds": 1.0,
+    })
+    mover, transport, stops = controller([
+        sample(ra=10.0, dec=43.0, alt=60.0, raw_status="nNpeEW280"),
+        sample(
+            ra=10.0, dec=43.0, alt=60.0, raw_status="nNpeEW286",
+            blockers=("onstep_reported_error",),
+        ),
+    ], config=config)
+    mocked_monotonic.side_effect = [0.0] * 7
+
+    with pytest.raises(RuntimeError, match=r"under-pole limit \(code 6\)"):
+        mover.move_ra_axis(-1.0, timeout_s=30.0)
+
+    assert stops == ["stop"]
+    assert transport.commands[-1] == (
+        "issues", "TELESCOPE_MOTION_WE",
+        {"MOTION_WEST": False, "MOTION_EAST": True},
+    )
+
+
+def test_finite_axis_jog_uses_retained_session_authority_and_updates_anchor():
+    mover, transport, stops = controller([
+        sample(ra=10.0, dec=20.0),
+        sample(ra=9.5, dec=20.0),
+    ])
+    calls = []
+
+    result = mover.run_finite_axis_jog(
+        lambda: calls.append("finite-target") or "completed"
+    )
+
+    assert result == "completed"
+    assert calls == ["finite-target"]
+    assert mover._stationary_reference == (9.5, 20.0)
+    assert transport.commands == []
+    assert stops == []
+
+
+def test_finite_axis_jog_refuses_without_retained_park_unpark_session():
+    transport = Transport()
+    mover = IndiTerrestrialController(
+        transport, CONFIG, Mode(), observe=lambda: sample(),
+        stop=lambda **kwargs: None,
+    )
+    called = []
+
+    with pytest.raises(RuntimeError, match="PARK then UNPARK"):
+        mover.run_finite_axis_jog(lambda: called.append(True))
+
+    assert called == []
+
+
+def test_park_reference_accepts_cached_coordinates_after_reconciled_park():
+    mover = IndiTerrestrialController(
+        Transport(), CONFIG, Mode(), observe=lambda: sample(),
+        stop=lambda **kwargs: None,
+    )
+
+    mover.capture_park_reference(sample(
+        parked=True, park_evidence_consistent=True, coordinates_live=False,
+        ra=7.5, dec=48.9,
+    ))
+
+    assert mover._park_reference is not None
+    assert mover._park_reference[:2] == (7.5, 48.9)
+
+
+@pytest.mark.parametrize(
+    "changes",
     [
-        ({"tracking": True}, "Tracking"),
-        ({"at_limit": True}, "Fault"),
-        ({"slewing": True}, "stationary"),
+        {"ra": None}, {"dec": None}, {"park_evidence_consistent": False},
+        {"slewing": True}, {"tracking": True}, {"at_limit": True},
     ],
 )
-def test_unsafe_start_states_refuse_without_motion(unsafe, message):
-    mover, transport, stops = controller([sample(**unsafe)])
-    with pytest.raises(RuntimeError, match=message):
-        mover.move_toward_north_horizon()
-    assert transport.commands == [] and stops == []
+def test_park_reference_rejects_missing_or_unsafe_evidence(changes):
+    mover = IndiTerrestrialController(
+        Transport(), CONFIG, Mode(), observe=lambda: sample(),
+        stop=lambda **kwargs: None,
+    )
+
+    with pytest.raises(RuntimeError, match="reconciled stationary PARKED"):
+        values = {"parked": True, "park_evidence_consistent": True} | changes
+        mover.capture_park_reference(sample(**values))
 
 
-def test_stale_start_without_verified_stationary_anchor_refuses():
+@pytest.mark.parametrize(
+    "direction,element",
+    [("east", "MOTION_EAST"), ("west", "MOTION_WEST")],
+)
+@patch("onstep_adapter.indi_terrestrial.time.sleep")
+def test_timed_ra_recovery_allows_limit_fault_and_always_stops(
+    mocked_sleep, direction, element,
+):
+    fault = ("onstep_limit_or_park_fault", "onstep_reported_error")
     mover, transport, stops = controller([
-        sample(status_live=False, coordinates_live=False, horizontal_live=False),
+        sample(at_limit=True, blockers=fault),
+        sample(at_limit=True, blockers=fault),
     ])
-    mover._stationary_reference = None
-    with pytest.raises(RuntimeError, match="Fresh"):
-        mover.move_toward_north_horizon()
-    assert transport.commands == [] and stops == []
+
+    result = mover.recover_ra_timed(direction, 1.0)
+
+    mocked_sleep.assert_called_once_with(1.0)
+    assert result.direction == direction
+    assert result.stop_confirmed
+    assert result.limit_or_fault_present
+    assert transport.commands == [
+        ("set", "TELESCOPE_SLEW_RATE", "9"),
+        ("issues", "TELESCOPE_MOTION_WE", {
+            "MOTION_WEST": False, "MOTION_EAST": False,
+        }),
+        ("issues", "TELESCOPE_MOTION_WE", {
+            "MOTION_WEST": element == "MOTION_WEST",
+            "MOTION_EAST": element == "MOTION_EAST",
+        }),
+    ]
+    assert stops == ["stop", "stop"]
 
 
-def test_step_is_bounded_by_configured_maximum():
-    mover, transport, _ = controller([])
-    with pytest.raises(ValueError, match="max_step"):
-        mover.move_toward_north_horizon(10.01)
+@pytest.mark.parametrize(
+    "direction,element",
+    [("north", "MOTION_NORTH"), ("south", "MOTION_SOUTH")],
+)
+@patch("onstep_adapter.indi_terrestrial.time.sleep")
+def test_timed_dec_recovery_allows_limit_fault_and_always_stops(
+    mocked_sleep, direction, element,
+):
+    fault = ("onstep_limit_or_park_fault", "onstep_reported_error")
+    mover, transport, stops = controller([
+        sample(at_limit=True, blockers=fault),
+        sample(at_limit=True, blockers=fault),
+    ])
+
+    result = mover.recover_dec_timed(direction, 0.5)
+
+    mocked_sleep.assert_called_once_with(0.5)
+    assert result.axis == "dec"
+    assert result.direction == direction
+    assert result.stop_confirmed
+    assert result.limit_or_fault_present
+    assert transport.commands == [
+        ("set", "TELESCOPE_SLEW_RATE", "9"),
+        ("issues", "TELESCOPE_MOTION_NS", {
+            "MOTION_NORTH": False, "MOTION_SOUTH": False,
+        }),
+        ("issues", "TELESCOPE_MOTION_NS", {
+            "MOTION_NORTH": element == "MOTION_NORTH",
+            "MOTION_SOUTH": element == "MOTION_SOUTH",
+        }),
+    ]
+    assert stops == ["stop", "stop"]
+
+
+@patch("onstep_adapter.indi_terrestrial.time.sleep")
+def test_repeated_same_direction_ra_jog_is_rearmed_each_time(mocked_sleep):
+    mover, transport, stops = controller([
+        sample(ra=10.0, dec=43.0, alt=60.0),
+        sample(ra=10.04, dec=43.0, alt=60.0, slewing=True),
+        sample(ra=10.04, dec=43.0, alt=60.0),
+        sample(ra=10.04, dec=43.0, alt=60.0),
+        sample(ra=10.08, dec=43.0, alt=60.0, slewing=True),
+        sample(ra=10.08, dec=43.0, alt=60.0),
+    ])
+
+    first = mover.move_ra_axis(-1.0)
+    second = mover.move_ra_axis(-1.0)
+
+    assert first.stop_confirmed and second.stop_confirmed
+    starts = [command for command in transport.commands if command[0] == "issues"]
+    assert starts == [
+        ("issues", "TELESCOPE_MOTION_WE", {
+            "MOTION_WEST": False, "MOTION_EAST": False,
+        }),
+        ("issues", "TELESCOPE_MOTION_WE", {
+            "MOTION_WEST": False, "MOTION_EAST": True,
+        }),
+        ("issues", "TELESCOPE_MOTION_WE", {
+            "MOTION_WEST": False, "MOTION_EAST": False,
+        }),
+        ("issues", "TELESCOPE_MOTION_WE", {
+            "MOTION_WEST": False, "MOTION_EAST": True,
+        }),
+    ]
+    assert stops == ["stop", "stop"]
+
+
+@pytest.mark.parametrize(
+    "axis,direction,property_name,element",
+    [
+        ("ra", "west", "TELESCOPE_MOTION_WE", "MOTION_WEST"),
+        ("dec", "south", "TELESCOPE_MOTION_NS", "MOTION_SOUTH"),
+    ],
+)
+@patch("onstep_adapter.indi_terrestrial.time.sleep")
+def test_normal_timed_jog_requires_session_and_fault_free_status(
+    mocked_sleep, axis, direction, property_name, element,
+):
+    mover, transport, stops = controller([sample(), sample()])
+
+    result = getattr(mover, f"move_{axis}_timed")(direction, 0.5)
+
+    assert not result.recovery_mode
+    assert result.axis == axis
+    assert transport.commands == [
+        ("set", "TELESCOPE_SLEW_RATE", "9"),
+        ("issues", property_name, {
+            ("MOTION_WEST" if axis == "ra" else "MOTION_NORTH"): False,
+            ("MOTION_EAST" if axis == "ra" else "MOTION_SOUTH"): False,
+        }),
+        ("issues", property_name, {
+            ("MOTION_WEST" if axis == "ra" else "MOTION_NORTH"):
+                element in {"MOTION_WEST", "MOTION_NORTH"},
+            ("MOTION_EAST" if axis == "ra" else "MOTION_SOUTH"):
+                element in {"MOTION_EAST", "MOTION_SOUTH"},
+        }),
+    ]
+    assert stops == ["stop", "stop"]
+
+
+def test_normal_timed_jog_does_not_escalate_to_recovery_on_fault():
+    fault = ("onstep_limit_or_park_fault", "onstep_reported_error")
+    mover, transport, stops = controller([
+        sample(at_limit=True, blockers=fault),
+    ])
+
+    with pytest.raises(RuntimeError, match="fault-free"):
+        mover.move_dec_timed("north", 0.5)
+
     assert transport.commands == []
+    assert stops == ["stop"]
+
+
+def test_normal_timed_jog_requires_retained_park_unpark_session():
+    mover, transport, stops = controller([sample()])
+    mover._park_reference = None
+
+    with pytest.raises(RuntimeError, match="PARK then UNPARK"):
+        mover.move_dec_timed("north", 0.5)
+
+    assert transport.commands == []
+    assert stops == ["stop"]
+
+
+def test_timed_ra_recovery_rejects_parked_even_with_limit_fault():
+    mover, transport, stops = controller([
+        sample(parked=True, at_limit=True, blockers=("onstep_limit_or_park_fault",)),
+    ])
+
+    with pytest.raises(RuntimeError, match="unparked"):
+        mover.recover_ra_timed("east", 0.5)
+
+    assert transport.commands == []
+    assert stops == ["stop"]
+
+
+@pytest.mark.parametrize("duration", (0.0, 2.1, float("nan")))
+def test_timed_ra_recovery_duration_is_bounded(duration):
+    mover, transport, stops = controller([])
+    with pytest.raises(ValueError, match="duration"):
+        mover.recover_ra_timed("east", duration)
+    assert transport.commands == []
+    assert stops == []

@@ -7,6 +7,20 @@ import math
 import re
 
 
+GENERAL_ERROR_NAMES = {
+    0: "none",
+    1: "motor_fault",
+    2: "altitude_minimum",
+    3: "limit_sense",
+    4: "declination_limit",
+    5: "azimuth_limit",
+    6: "under_pole_limit",
+    7: "meridian_limit",
+    8: "sync_error",
+    9: "park_error",
+}
+
+
 def decode_gu(value: str) -> dict[str, object]:
     raw = value.strip().rstrip("#")
     if (
@@ -22,6 +36,7 @@ def decode_gu(value: str) -> dict[str, object]:
     slewing = "N" not in flags
     at_home = "H" in flags
     guiding = "G" in flags
+    general_error_code = int(raw[-1])
     pier_side = "east" if "T" in flags else "west" if "W" in flags else None
     if parked:
         motion_state = "parked"
@@ -48,6 +63,10 @@ def decode_gu(value: str) -> dict[str, object]:
         "not_slewing": not slewing,
         "at_home": at_home,
         "guiding": guiding,
+        "general_error_code": general_error_code,
+        "general_error": GENERAL_ERROR_NAMES.get(
+            general_error_code, f"controller_error_{general_error_code}"
+        ),
         "pier_side": pier_side,
         "motion_state": motion_state,
     }

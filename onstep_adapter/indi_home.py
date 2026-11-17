@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import time
 
 from .indi_status import IndiStatusReader
 from .indi_stop import IndiStopResult, stop_mount_via_indi
 from .indi_transport import IndiTransport
 from .indi_gu import decode_gu
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -322,6 +326,19 @@ class IndiHomeRouter:
             if not raw:
                 raise RuntimeError("OnStep status is unavailable during mechanical route")
             decoded = decode_gu(raw)
+            snapshot = self.reader.read()
+            logger.info(
+                "Mechanical route telemetry: raw_status=%r motion=%s "
+                "parked=%s home=%s tracking=%s slewing=%s ra=%s dec=%s "
+                "alt=%s pier=%s controller_error=%s",
+                raw, getattr(snapshot, "motion_state", None),
+                getattr(snapshot, "parked", None), getattr(snapshot, "at_home", None),
+                getattr(snapshot, "tracking", None), getattr(snapshot, "slewing", None),
+                getattr(snapshot, "ra_hours", None), getattr(snapshot, "dec_deg", None),
+                getattr(snapshot, "altitude_deg", None),
+                getattr(snapshot, "pier_side", None),
+                decoded.get("general_error"),
+            )
             if (
                 current.state.lower() == "alert" or
                 current.values.get("Error", "None") not in {"None", "", "0"} or
@@ -352,6 +369,19 @@ class IndiHomeRouter:
             revision = current.revision
             raw = current.values.get(":GU# return", "")
             decoded = decode_gu(raw) if raw else {}
+            snapshot = self.reader.read()
+            logger.info(
+                "PARK route telemetry: raw_status=%r motion=%s parked=%s "
+                "home=%s tracking=%s slewing=%s ra=%s dec=%s alt=%s pier=%s "
+                "controller_error=%s",
+                raw, getattr(snapshot, "motion_state", None),
+                getattr(snapshot, "parked", None), getattr(snapshot, "at_home", None),
+                getattr(snapshot, "tracking", None), getattr(snapshot, "slewing", None),
+                getattr(snapshot, "ra_hours", None), getattr(snapshot, "dec_deg", None),
+                getattr(snapshot, "altitude_deg", None),
+                getattr(snapshot, "pier_side", None),
+                decoded.get("general_error"),
+            )
             if (
                 not decoded or current.state.lower() == "alert" or
                 current.values.get("Error", "None") not in {"None", "", "0"} or

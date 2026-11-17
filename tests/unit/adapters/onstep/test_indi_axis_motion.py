@@ -119,7 +119,11 @@ class IndiAxisMotionTests(unittest.TestCase):
         mover, fake, _ = self.make_mover(
             [snapshot(ha=None, dec=79.5)], min_dec_deg=-80.0, max_dec_deg=80.0
         )
-        with self.assertRaisesRegex(RuntimeError, "Projected DEC"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"Projected DEC target \+80\.500 deg.*configured bounds "
+            r"-80\.000\.\.\+80\.000 deg",
+        ):
             mover.move("dec", 1.0)
         self.assertEqual(fake.commands, [])
 

@@ -111,3 +111,24 @@ def test_terrestrial_mode_blocks_astronomical_guiding(tmp_path: Path):
     )
     with pytest.raises(RuntimeError, match="astronomical"):
         client.guide_pulse("east", 250)
+
+
+def test_terrestrial_mode_blocks_coordinate_axis_move(tmp_path: Path):
+    state = str(tmp_path / "mode.json")
+    config = IndiRuntimeConfig(
+        host="127.0.0.1", port=7624, device="LX200 OnStep",
+        observer_lat=50.336, observer_lon=8.533, observer_alt_m=304,
+        flip_request_deg=1, tracking_stop_deg=1.75,
+        flip_allowance_seconds=120, reserve_seconds=30,
+        safe_meridian_flip_via_home=True, mode_state_path=state,
+    )
+    transport = SimpleNamespace(is_open=True)
+    client = OnStepIndiClient(config=config, transport=transport)
+    client._mode_controller.authorize_after_park(status_revision=10)
+    client._mode_controller.set_mode(IndiOperatingMode.TERRESTRIAL, parked())
+    client._axis_mover = SimpleNamespace(
+        move=lambda *args, **kwargs: pytest.fail("axis command was sent")
+    )
+
+    with pytest.raises(RuntimeError, match="astronomical"):
+        client.move_axis_deg("ra", 1.0)

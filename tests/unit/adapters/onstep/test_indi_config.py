@@ -25,8 +25,10 @@ class IndiConfigTests(unittest.TestCase):
         self.assertEqual(config.movement_max_dec_deg, 80.0)
         self.assertTrue(config.mode_state_path.endswith("mode_state.json"))
         self.assertEqual(config.terrestrial_step_deg, 10.0)
-        self.assertEqual(config.terrestrial_horizon_margin_deg, 2.0)
+        self.assertEqual(config.terrestrial_horizon_margin_deg, 0.0)
         self.assertEqual(config.terrestrial_slew_rate_element, "9")
+        self.assertEqual(config.terrestrial_ra_recovery_max_seconds, 2.0)
+        self.assertEqual(config.terrestrial_stall_timeout_seconds, 3.0)
 
     def test_configured_stop_above_firmware_guard_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "below both firmware"):
@@ -105,6 +107,12 @@ class IndiConfigTests(unittest.TestCase):
                 encoding="ascii",
             )
             with self.assertRaisesRegex(ValueError, "Terrestrial steps"):
+                load_indi_config(target)
+            target.write_text(
+                original.replace("stall_timeout_seconds = 3.0", "stall_timeout_seconds = 0.1"),
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(ValueError, "stall timeout"):
                 load_indi_config(target)
 
 

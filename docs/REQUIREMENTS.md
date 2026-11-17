@@ -19,8 +19,10 @@ documented authority gates.
   remain calling-application responsibilities.
 - Idempotent persistent switch requests shall accept an existing matching `Ok`
   state without waiting for an update that the INDI driver may not publish.
-- After UNPARK, an already non-tracking fresh OnStep status shall complete the
-  operation without another TRACK_OFF write or revision wait.
+- On this supported OnStep setup, UNPARK starts tracking automatically. A
+  non-tracking UNPARK operation shall observe that transition, request
+  `TRACK_OFF`, and confirm fresh non-tracking status before returning success
+  or permitting subsequent non-tracking motion.
 - Unexpected INDI reader termination shall make transport health false, wake
   property waiters and preserve the original failure as diagnostic cause.
 - A failed reader session shall reject further writes. Recovery shall require
@@ -223,4 +225,35 @@ documented authority gates.
   Raspberry time, and configured observer location. The confirmed stationary
   UNPARK position may anchor only the start of the next bounded move; motion
   progress and settling still require fresh coordinate telemetry.
+
+## Relative Horizontal Motion
+
+- **REQ-HOR-001 (P0):** The adapter shall expose bounded terrestrial
+  `move_alt_deg`, `move_az_deg`, and combined horizontal endpoint operations.
+  ALT is positive upward; AZ is positive north-through-east. An ALT-only move
+  preserves starting AZ and an AZ-only move preserves starting ALT.
+- **REQ-HOR-002 (P0):** Horizontal motion requires fresh reconciled logical
+  state, explicit terrestrial session authority, UNPARKED, stationary,
+  tracking OFF, no guide/slew/fault/limit, and current Raspberry UTC plus the
+  configured observer location. Cached INDI `TIME_UTC` is not live authority.
+- **REQ-HOR-003 (P0):** The adapter shall transform the fixed Earth-frame
+  horizontal target to current RA/DEC before each bounded attempt, use a finite
+  INDI coordinate slew, and never use indefinite manual motion for a
+  degree-valued horizontal request.
+- **REQ-HOR-004 (P0):** Target and conservatively sampled path shall remain
+  inside configured altitude, DEC, meridian, counterweight, same-pier, zenith
+  and celestial-pole constraints. Endpoint safety alone is insufficient.
+- **REQ-HOR-005 (P0):** Fresh horizontal feedback shall come from native INDI
+  ALT/AZ or a declared derivation from fresh RA/DEC, Raspberry UTC and site.
+  Native/derived conflicts, stale feedback, pier changes and external
+  retargeting fail closed and request verified STOP.
+- **REQ-HOR-006 (P0):** Arrival tracking shall be disabled and confirmed OFF.
+  Earth-rotation residuals may be corrected only by a configured finite number
+  of full revalidated attempts. STOP/cancel suppresses every later attempt and
+  never starts HOME or PARK.
+- **REQ-HOR-007 (P0):** Results shall expose requested, target, final and
+  measured ALT/AZ, transformation source and RA/DEC target, pier side,
+  attempts, tolerances, raw final status and stop/tracking confirmation.
+  Logical endpoint confirmation shall remain explicitly estimated rather than
+  encoder-verified.
 

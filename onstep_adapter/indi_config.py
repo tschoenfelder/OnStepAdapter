@@ -31,10 +31,12 @@ class IndiRuntimeConfig:
     mode_state_path: str | None = None
     terrestrial_step_deg: float = 10.0
     terrestrial_max_step_deg: float = 10.0
-    terrestrial_horizon_margin_deg: float = 2.0
+    terrestrial_horizon_margin_deg: float = 0.0
     terrestrial_brake_lead_deg: float = 0.5
     terrestrial_stop_hold_seconds: float = 3.0
     terrestrial_slew_rate_element: str = "9"
+    terrestrial_ra_recovery_max_seconds: float = 2.0
+    terrestrial_stall_timeout_seconds: float = 3.0
 
 
 def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
@@ -78,7 +80,7 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
             terrestrial_step_deg=float(terrestrial.get("step_deg", 10.0)),
             terrestrial_max_step_deg=float(terrestrial.get("max_step_deg", 10.0)),
             terrestrial_horizon_margin_deg=float(
-                terrestrial.get("horizon_margin_deg", 2.0)
+                terrestrial.get("horizon_margin_deg", 0.0)
             ),
             terrestrial_brake_lead_deg=float(
                 terrestrial.get("brake_lead_deg", 0.5)
@@ -88,6 +90,12 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
             ),
             terrestrial_slew_rate_element=str(
                 terrestrial.get("slew_rate_element", "9")
+            ),
+            terrestrial_ra_recovery_max_seconds=float(
+                terrestrial.get("ra_recovery_max_seconds", 2.0)
+            ),
+            terrestrial_stall_timeout_seconds=float(
+                terrestrial.get("stall_timeout_seconds", 3.0)
             ),
         )
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
@@ -120,6 +128,8 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         result.terrestrial_horizon_margin_deg,
         result.terrestrial_brake_lead_deg,
         result.terrestrial_stop_hold_seconds,
+        result.terrestrial_ra_recovery_max_seconds,
+        result.terrestrial_stall_timeout_seconds,
     )
     if not all(math.isfinite(value) for value in numeric):
         raise ValueError("INDI configuration numeric values must be finite")
@@ -150,4 +160,8 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         raise ValueError("Terrestrial stop hold must be within 0..30 seconds")
     if not result.terrestrial_slew_rate_element:
         raise ValueError("Terrestrial slew-rate element must not be empty")
+    if not 0.1 <= result.terrestrial_ra_recovery_max_seconds <= 5.0:
+        raise ValueError("RA recovery maximum must be within 0.1..5 seconds")
+    if not 0.5 <= result.terrestrial_stall_timeout_seconds <= 10.0:
+        raise ValueError("Terrestrial stall timeout must be within 0.5..10 seconds")
     return result

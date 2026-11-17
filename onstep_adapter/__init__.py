@@ -21,14 +21,16 @@ from .indi_mount import IndiMount
 from .indi_status import IndiMountSnapshot
 from .indi_stop import IndiStopResult
 from .indi_tracking import IndiTrackingResult
-from .indi_terrestrial import IndiTerrestrialMoveResult
+from .indi_terrestrial import (
+    IndiTerrestrialMoveResult, IndiTerrestrialRecoveryResult,
+)
 from .meridian_policy import MeridianPolicy
 
 OnStepClient = OnStepIndiClient
 OnStepMount = IndiMount
 OnStepFocuser = IndiFocuser
 
-__version__ = "0.7.0"
+__version__ = "0.7.11"
 
 __all__ = [
     "IndiFocuserMoveResult",
@@ -50,6 +52,7 @@ __all__ = [
     "IndiSyncResult",
     "IndiTrackingResult",
     "IndiTerrestrialMoveResult",
+    "IndiTerrestrialRecoveryResult",
     "IndiUnparkResult",
     "MeridianPolicy",
     "GUIDE_CHUNK_MS",

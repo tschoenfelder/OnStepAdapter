@@ -121,7 +121,11 @@ class IndiStatusReader:
             blockers.append("onstep_status_unavailable")
         if decoded.get("at_limit") or decoded.get("park_failed"):
             blockers.append("onstep_limit_or_park_fault")
-        if status is not None and status.values.get("Error", "None") not in {"None", "", "0"}:
+        if (
+            decoded.get("general_error_code", 0) != 0 or
+            status is not None and
+            status.values.get("Error", "None") not in {"None", "", "0"}
+        ):
             blockers.append("onstep_reported_error")
         pier_side = decoded.get("pier_side")
         if pier_live and pier is not None and pier_side is not None:
