@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- 0.6.12: a finite axis move (`move_dec_axis_deg` / `move_ra_axis_deg`) now
+  holds the mechanical hour angle of the axis it does not move. With tracking
+  off the published RA grows at the sidereal rate, and the goto target used
+  the last RA reading unchanged, so every DEC move also drove the RA axis back
+  by that reading's age (real capture: 0.4-1.5 s, 12-20 arcsec of HA per DEC
+  move). The target RA is now advanced by the sidereal drift since the
+  reading (its `coordinates_age_ms` plus the time to the send). What remains
+  is OnStep's own 1 s RA resolution.
+- 0.6.12: TRACK_OFF is sent as soon as the slew is seen, not only after
+  arrival: OnStep can start sidereal tracking by itself at the end of a goto
+  (seen on the first goto after unpark). The post-arrival TRACK_OFF and its
+  two-sample confirmation are unchanged.
+
 - Merge the 0.6.7 to 0.6.11 releases (tagged on a side branch) into `main`:
   finite axis moves may be up to 15 degrees; HA missing from INDI is derived
   from the UTC clock and the configured longitude; finite-move targets and
