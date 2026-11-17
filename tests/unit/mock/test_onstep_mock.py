@@ -368,3 +368,41 @@ def test_non_tracking_pose_is_earth_fixed_and_ra_drifts():
 def test_wait_until_reports_last_state_on_timeout(onstep_sim):
     with pytest.raises(TimeoutError, match="last state"):
         onstep_sim.wait_until(lambda m: not m.parked, timeout=0.2)
+
+
+def test_reconnect_device_recovers_a_driver_that_lost_its_serial_port(onstep_sim, onstep_client):
+    """Field incident 908a26b9: a USB reset left the driver polling a dead serial handle --
+    no OnStep Status, the position in "Alert" -- while indiserver kept running. Reopening the
+    INDI device (DISCONNECT, CONNECT) brings fresh status back; the mount never moves."""
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=True)
+    time.sleep(0.4)
+    onstep_sim.lose_serial()
+    time.sleep(3.5)  # past OnStepAdapter's 3 s freshness limit
+    stale = onstep_client.mount.get_status()
+    assert "onstep_status_not_fresh" in stale.blockers
+    unpark = onstep_client.mount.unpark()
+    assert not unpark.unparked_confirmed  # refused on the stale status, as on the rig
+
+    result = onstep_client.mount.reconnect_device(timeout=10.0)
+
+    assert result.recovered and result.error is None
+    assert not onstep_sim.serial_lost
+    deadline = time.monotonic() + 3.0
+    while "onstep_status_not_fresh" in onstep_client.mount.get_status().blockers:
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    sent = [(w.property, w.values) for w in onstep_sim.writes]
+    assert ("CONNECTION", {"DISCONNECT": "On"}) in sent and ("CONNECTION", {"CONNECT": "On"}) in sent
+    assert onstep_sim.mount.parked and onstep_sim.mount.motion == "IDLE"
+    assert onstep_client.mount.unpark().unparked_confirmed
+
+
+def test_reconnect_device_is_refused_while_a_move_runs(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    handle = onstep_client.mount.jog_dec(1, rate_index=5, lease_s=2.0)
+    onstep_sim.wait_until(lambda m: m.motion == "MANUAL", timeout=3)
+    with pytest.raises(RuntimeError, match="is active"):
+        onstep_client.mount.reconnect_device()
+    handle.release()
+    handle.wait(timeout=10)

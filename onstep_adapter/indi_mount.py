@@ -38,6 +38,12 @@ class IndiMount:
         return self._client.park()
 
     @_traced
+    def reconnect_device(self, *, timeout: float = 20.0):
+        """Reopen the INDI driver's link to the controller (DISCONNECT, CONNECT) and wait for
+        fresh OnStep status; never moves the mount. Returns an ``IndiReconnectResult``."""
+        return self._client.reconnect_device(timeout=timeout)
+
+    @_traced
     def stop(self):
         """Stop all motion now, including a running handle's move."""
         return self._client.emergency_stop()

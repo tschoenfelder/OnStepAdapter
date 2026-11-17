@@ -82,6 +82,9 @@ class SimulatedOnStepServer:
         self._running = False
         self._t0 = time.monotonic()
         self._status_frozen = False
+        #: `lose_serial()`: the driver lost its serial port (USB reset); a DISCONNECT +
+        #: CONNECT of the INDI device reopens it.
+        self._serial_lost = False
         self._reject_next: dict[str, str] = {}
         self._focuser_target: int | None = None
         self._focuser_position = 15000.0
@@ -245,6 +248,19 @@ class SimulatedOnStepServer:
         with self._lock:
             self._status_frozen = frozen
 
+    def lose_serial(self) -> None:
+        """Field incident 908a26b9: the controller's USB serial adapter re-enumerated while
+        indiserver and the driver kept running -- OnStep Status stops, the published
+        position goes "Alert" and stops changing, CONNECTION still says CONNECT=On."""
+        with self._lock:
+            self._serial_lost = True
+            self._status_frozen = True
+
+    @property
+    def serial_lost(self) -> bool:
+        with self._lock:
+            return self._serial_lost
+
     def drop_connections(self) -> None:
         with self._lock:
             clients, self._clients = self._clients, []
@@ -407,6 +423,8 @@ class SimulatedOnStepServer:
 
     def _apply_switch(self, name: str, prop: Prop, values: dict[str, str], on: list[str], now: float) -> str | None:
         mount = self._mount
+        if self._serial_lost and name != "CONNECTION":
+            return "no answer from the controller (serial link lost)"
         if name == "TELESCOPE_ABORT_MOTION":
             mount.abort(now)
             for motion in ("TELESCOPE_MOTION_NS", "TELESCOPE_MOTION_WE"):
@@ -463,7 +481,12 @@ class SimulatedOnStepServer:
         elif name == "TELESCOPE_SLEW_RATE":
             mount.slew_rate = int(element)
         elif name == "CONNECTION" and element == "DISCONNECT":
-            return "the mock device stays connected"
+            if not self._serial_lost:
+                return "the mock device stays connected"
+        elif name == "CONNECTION" and element == "CONNECT":
+            if self._serial_lost and prop.elements.get("DISCONNECT") == "On":
+                self._serial_lost = False  # the driver reopened the (new) serial port
+                self._status_frozen = False
         if reason is not None:
             return reason
         if prop.rule == "OneOfMany" or element is not None:
@@ -513,6 +536,9 @@ class SimulatedOnStepServer:
         status.elements["Error"] = "None" if mount.fault != "ERROR" else "General error"
         status.state = "Alert" if mount.fault else "Ok"
         coords = self._props["EQUATORIAL_EOD_COORD"]
+        if self._serial_lost:  # the driver republishes its last values, in Alert
+            coords.state = "Alert"
+            return
         coords.elements = {"RA": f"{mount.ra_h():.8f}", "DEC": f"{mount.dec_deg:.8f}"}
         if mount.fault:
             coords.state = "Alert"
