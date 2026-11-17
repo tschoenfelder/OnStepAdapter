@@ -19,6 +19,9 @@ from .indi_gu import local_sidereal_hours
 Axis = Literal["ra", "dec"]
 MIN_AXIS_MOVE_ARCSEC = 30.0
 MAX_AXIS_MOVE_DEG = 15.0
+#: Sidereal seconds per solar second: how fast the published RA of a
+#: stationary (tracking-off) mount grows.
+SIDEREAL_PER_SOLAR = 1.00273790935
 LOGGER = logging.getLogger(__name__)
 
 #: Why an RA-axis move is refused before the DEC axis has moved (see
@@ -82,6 +85,7 @@ class IndiAxisMover:
         emergency_stop: Callable[[], object],
         *, min_alt_deg: float = -2.0, min_dec_deg: float = -80.0,
         max_dec_deg: float = 80.0,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if not all(math.isfinite(value) for value in (
             observer_lat_deg, observer_lon_deg, min_alt_deg,
@@ -101,6 +105,7 @@ class IndiAxisMover:
         self.max_dec_deg = max_dec_deg
         self.observe = observe
         self.emergency_stop = emergency_stop
+        self._monotonic = monotonic
         self._lock = threading.Lock()
         self._ra_defined = False
 
@@ -255,6 +260,22 @@ class IndiAxisMover:
             return ra_hours, dec_deg - offset_deg, ha_deg
         return (ra_hours - offset_deg / 15.0) % 24.0, dec_deg, ha_deg + offset_deg
 
+    def _stationary_ra_drift_hours(
+        self, snapshot: IndiMountSnapshot, observed_at: float,
+    ) -> float:
+        """How far the published RA has advanced since ``snapshot`` was taken.
+
+        A finite move runs with tracking off, so the mount is stationary and
+        its RA grows at the sidereal rate.  ``snapshot``'s RA is
+        ``coordinates_age_ms`` old when observed at ``observed_at``
+        (monotonic); a goto target built from it unchanged would drive the
+        RA axis back by that age.  Real capture b977fe85: every DEC move
+        dragged the RA axis by 12-20 arcsec of hour angle this way.
+        """
+        age_s = max(0.0, (snapshot.coordinates_age_ms or 0.0) / 1000.0)
+        elapsed_s = max(0.0, self._monotonic() - observed_at) + age_s
+        return elapsed_s * SIDEREAL_PER_SOLAR / 3600.0
+
     @staticmethod
     def validate_request(
         axis: Axis, offset_deg: float, *, timeout_s: float = 30.0,
@@ -306,6 +327,7 @@ class IndiAxisMover:
         try:
             token.report("preflight", fraction=0.0)
             before = self.observe()
+            observed_at = self._monotonic()
             self._check(before)
             if before.at_home:
                 self._ra_defined = False
@@ -363,6 +385,16 @@ class IndiAxisMover:
             token.check()
             self.transport.set_switch(self.device, "ON_COORD_SET", "SLEW")
             issued = True
+            # Hold the mechanical HA, not the stale RA: advance the target RA
+            # by the sidereal drift since the reading, computed as late as
+            # possible.  The other axis then gets no commanded motion beyond
+            # OnStep's own 1 s RA resolution.
+            drift_hours = self._stationary_ra_drift_hours(before, observed_at)
+            target_ra = (target_ra + drift_hours) % 24.0
+            LOGGER.info(
+                "Axis target RA advanced by %.3f s of sidereal drift to %.9f h",
+                drift_hours * 3600.0, target_ra,
+            )
             self.transport.issue_numbers(
                 self.device, "EQUATORIAL_EOD_COORD",
                 {"RA": target_ra, "DEC": target_dec},
@@ -373,6 +405,7 @@ class IndiAxisMover:
             latest = before
             last_coord_revision = before.coordinates_revision
             target_coordinates_seen = False
+            early_track_off_sent = False
             while True:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Axis move did not reach its finite target")
@@ -384,6 +417,18 @@ class IndiAxisMover:
                     require_fresh_coordinates=not target_coordinates_seen,
                     allow_transient_secondary_pier_conflict=True,
                 )
+                if latest.slewing and not early_track_off_sent:
+                    # OnStep may start sidereal tracking by itself when the
+                    # goto ends (real capture b977fe85, first move after
+                    # unpark: ~1.5 s of tracking before the post-arrival
+                    # TRACK_OFF landed).  Switch it off as soon as the slew
+                    # is seen; the same capture shows OnStep finishing the
+                    # goto normally after a mid-slew TRACK_OFF.  The
+                    # post-arrival TRACK_OFF below stays the confirmed stop.
+                    self.transport.issue_switch(
+                        self.device, "TELESCOPE_TRACK_STATE", "TRACK_OFF"
+                    )
+                    early_track_off_sent = True
                 if target_coordinates_seen:
                     if not latest.slewing:
                         break

@@ -10,12 +10,15 @@ from onstep_adapter.indi_status import IndiMountSnapshot
 
 
 def snapshot(ha=-30.0, ra=10.0, dec=20.0, revision=1, **changes):
+    """A reading observed the instant it arrived (``coordinates_age_ms=0``), so
+    a target needs no sidereal-drift correction unless a test sets an age;
+    ``StationaryDriftTests`` covers the correction."""
     base = IndiMountSnapshot(
         raw_status="nNpET260", motion_state="unparked", pier_side="east",
         ra_hours=ra, dec_deg=dec, ha_deg=ha,
         meridian_distance_deg=abs(ha) if ha is not None else None,
         tracking=False, slewing=False, parked=False, at_home=False,
-        at_limit=False, status_age_ms=50.0, coordinates_age_ms=50.0,
+        at_limit=False, status_age_ms=50.0, coordinates_age_ms=0.0,
         status_live=True, coordinates_live=True, time_site_authority=True,
         home_authority=True, mechanical_safe=False, motion_refused=True,
         blockers=(), status_revision=revision,
@@ -52,7 +55,8 @@ class IndiAxisMotionTests(unittest.TestCase):
         stops = []
         mover = IndiAxisMover(
             fake, "LX200 OnStep", 50.336, 8.533, lambda: next(sequence),
-            lambda: stops.append("emergency_stop"), **movement_limits,
+            lambda: stops.append("emergency_stop"),
+            monotonic=lambda: 0.0, **movement_limits,
         )
         if ra_defined:
             mover._ra_defined = True
@@ -461,7 +465,7 @@ class DecFirstTests(unittest.TestCase):
         stops = []
         mover = IndiAxisMover(
             fake, "LX200 OnStep", 50.336, 8.533, lambda: next(sequence),
-            lambda: stops.append("emergency_stop"),
+            lambda: stops.append("emergency_stop"), monotonic=lambda: 0.0,
         )
         return mover, fake, stops
 
@@ -547,6 +551,87 @@ class DecFirstTests(unittest.TestCase):
         self.assertFalse(IndiMount(client).ra_axis_defined)
         client.ra_axis_defined = True
         self.assertTrue(IndiMount(client).ra_axis_defined)
+
+
+class StationaryDriftTests(unittest.TestCase):
+    """Real capture b977fe85: with tracking off the published RA grows at the
+    sidereal rate, so a DEC target that reuses the last (0.4-1.5 s old) RA
+    reading drags the RA axis back by that age -- 12-20 arcsec of HA per DEC
+    move.  The target RA must hold the mechanical HA at the moment it is sent."""
+
+    def make_mover(self, samples, clock):
+        fake = FakeTransport()
+        sequence = iter(samples)
+        stops = []
+        set_switch = fake.set_switch
+
+        def slow_set_switch(device, name, element):
+            clock.append(clock[-1] + 0.1)  # ON_COORD_SET takes 0.1 s to confirm
+            set_switch(device, name, element)
+
+        fake.set_switch = slow_set_switch
+        mover = IndiAxisMover(
+            fake, "LX200 OnStep", 50.336, 8.533, lambda: next(sequence),
+            lambda: stops.append("emergency_stop"), monotonic=lambda: clock[-1],
+        )
+        mover._ra_defined = True
+        return mover, fake, stops
+
+    @staticmethod
+    def drifted_samples(before, target_ra, target_dec):
+        return [before] + [
+            snapshot(ra=target_ra, dec=target_dec, revision=rev, slewing=rev == 2)
+            for rev in (2, 3, 4, 5)
+        ]
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_dec_target_ra_is_advanced_by_reading_age_and_elapsed_time(self, unused_sleep):
+        # The reading is 1.2 s old when observed; the goto is sent 0.1 s
+        # after the observation (ON_COORD_SET confirms in between).
+        before = snapshot(ha=0.0, ra=8.0, dec=50.0, coordinates_age_ms=1200.0)
+        drift_h = 1.3 * 1.00273790935 / 3600.0
+        clock = [100.0]
+        mover, fake, stops = self.make_mover(
+            self.drifted_samples(before, 8.0 + drift_h, 49.0), clock
+        )
+        mover.move("dec", 1.0)
+        target = fake.commands[1][1]
+        self.assertAlmostEqual(target["RA"], 8.0 + drift_h, places=12)
+        self.assertEqual(target["DEC"], 49.0)
+        self.assertEqual(stops, [])
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_ra_target_keeps_the_requested_hour_angle_change_after_drift(self, unused_sleep):
+        before = snapshot(ha=0.0, ra=8.0, dec=50.0, coordinates_age_ms=500.0)
+        drift_h = 0.6 * 1.00273790935 / 3600.0
+        expected_ra = 8.0 - 1.0 / 15.0 + drift_h
+        clock = [5.0]
+        mover, fake, _ = self.make_mover(
+            self.drifted_samples(before, expected_ra, 50.0), clock
+        )
+        mover.move("ra", 1.0)
+        self.assertAlmostEqual(fake.commands[1][1]["RA"], expected_ra, places=12)
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_track_off_is_sent_as_soon_as_the_slew_is_seen(self, unused_sleep):
+        # Real capture b977fe85: OnStep switched sidereal tracking on by itself
+        # at the end of the first goto after unpark.
+        before = snapshot(ha=0.0, ra=8.0, dec=50.0)
+        samples = [
+            before,
+            snapshot(ra=8.0, dec=49.5, revision=2, slewing=True),
+            snapshot(ra=8.0, dec=49.0, revision=3, slewing=True),
+            snapshot(ra=8.0, dec=49.0, revision=4),
+            snapshot(ra=8.0, dec=49.0, revision=5),
+            snapshot(ra=8.0, dec=49.0, revision=6),
+        ]
+        mover, fake, stops = self.make_mover(samples, [0.0])
+        mover.move("dec", 1.0)
+        track_off = ("TELESCOPE_TRACK_STATE", "TRACK_OFF")
+        # Once mid-slew (right after the first slewing reading), once after arrival.
+        self.assertEqual(fake.commands[2], track_off)
+        self.assertEqual(fake.commands.count(track_off), 2)
+        self.assertEqual(stops, [])
 
 
 if __name__ == "__main__":
