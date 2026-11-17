@@ -117,6 +117,8 @@ class VirtualMount:
     target_dec_deg: float = 0.0
     stop_at: float = 0.0
     manual_ns: int = 0  # +1 north, -1 south
+    #: How NORTH changes the published DEC after leaving the pole (None: from the pier side).
+    ns_dec_sign: float | None = None
     manual_we: int = 0  # +1 west (HA up), -1 east
     slew_rate: int = 6
     guiding_until: float = 0.0
@@ -212,6 +214,7 @@ class VirtualMount:
         return None
 
     def start_goto(self, kind: str, now: float, ra_h: float = 0.0, dec_deg: float = 0.0) -> str | None:
+        self.ns_dec_sign = None
         if self.fault:
             return f"fault {self.fault}"
         if kind != "park" and self.parked:
@@ -282,7 +285,17 @@ class VirtualMount:
             edge = True
         elif self.motion == "MANUAL":
             step = RATE_MULTIPLIERS[self.slew_rate] * SIDEREAL_DEG_PER_S * dt * self.config.speed
-            self.dec_deg = max(-90.0, min(90.0, self.dec_deg + self.manual_ns * step))
+            # OnStep's NORTH is a mechanical direction: on the real rig it lowers the published
+            # DEC at pier side east and away from HOME (the pole), and raises it at pier side
+            # west -- a mechanical axis 2 crossing the pole, without modelling the crossing.
+            # Axis 2 alone never changes the pier side (that follows axis 1); leaving the pole,
+            # either direction lowers DEC, and keeps doing so until the mount is placed or slews.
+            if self.manual_ns and self.dec_deg >= 90.0:
+                self.ns_dec_sign = -float(self.manual_ns)
+            ns_sign = self.ns_dec_sign
+            if ns_sign is None:
+                ns_sign = -1.0 if self.pier_side == "east" else 1.0
+            self.dec_deg = max(-90.0, min(90.0, self.dec_deg + ns_sign * self.manual_ns * step))
             self.ha_h = wrap_hours(self.ha_h + self.manual_we * step / 15.0)
         elif self.motion == "SLEWING":
             edge = self._step_goto(dt, now)

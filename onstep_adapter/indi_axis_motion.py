@@ -15,6 +15,7 @@ from .indi_motion import NO_STOP, MotionStopped, MotionToken
 from .indi_status import IndiMountSnapshot
 from .indi_transport import IndiTransport
 from .indi_gu import local_sidereal_hours
+from .indi_axis_drive import SingleAxisDrive
 
 Axis = Literal["ra", "dec"]
 MIN_AXIS_MOVE_ARCSEC = 30.0
@@ -86,6 +87,8 @@ class IndiAxisMover:
         *, min_alt_deg: float = -2.0, min_dec_deg: float = -80.0,
         max_dec_deg: float = 80.0,
         monotonic: Callable[[], float] = time.monotonic,
+        single_axis: bool = True,
+        utc_clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not all(math.isfinite(value) for value in (
             observer_lat_deg, observer_lon_deg, min_alt_deg,
@@ -106,6 +109,11 @@ class IndiAxisMover:
         self.observe = observe
         self.emergency_stop = emergency_stop
         self._monotonic = monotonic
+        #: True (the default): a finite move drives only its own axis with OnStep's
+        #: single-axis motion (``indi_axis_drive``); False: the former goto to a computed
+        #: RA/DEC target, which also commands the other axis (kept for comparison/tests).
+        self.single_axis = single_axis
+        self._drive = SingleAxisDrive(self, utc_clock=utc_clock, monotonic=monotonic)
         self._lock = threading.Lock()
         self._ra_defined = False
 
@@ -371,6 +379,30 @@ class IndiAxisMover:
             if target_alt < self.min_alt_deg - 1e-9:
                 raise RuntimeError(
                     "Projected altitude leaves the local movement bound"
+                )
+            if self.single_axis:
+                deadline = self._monotonic() + timeout_s + abs(offset_deg) * 3600.0 / 60.0
+
+                def mark_issued() -> None:
+                    nonlocal issued
+                    issued = True
+
+                outcome = self._drive.run(
+                    axis, offset_deg, before, poll_s=poll_s, deadline=deadline,
+                    token=token, pause=pause, on_issue=mark_issued,
+                )
+                latest = outcome.final
+                if axis == "dec" and not latest.at_home:
+                    self._ra_defined = True
+                return IndiAxisMoveResult(
+                    axis, offset_deg, offset_deg * 3600.0,
+                    outcome.achieved_arcsec / 3600.0,
+                    before.ra_hours, latest.ra_hours if latest.ra_hours is not None
+                    else before.ra_hours,
+                    before.dec_deg, latest.dec_deg if latest.dec_deg is not None
+                    else before.dec_deg,
+                    before.pier_side, True, outcome.samples,
+                    motion_mode=requested_mode.value,
                 )
             arrival_tolerance = min(
                 0.05, max(10.0 / 3600.0, abs(offset_deg) * 0.10)

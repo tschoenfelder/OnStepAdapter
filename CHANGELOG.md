@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- 0.6.13: **finite axis moves no longer use a goto.** `move_dec_axis_deg()` /
+  `move_ra_axis_deg()` drive only the requested axis with OnStep's single-axis
+  motion (`TELESCOPE_MOTION_NS` / `TELESCOPE_MOTION_WE`) at a `TELESCOPE_SLEW_RATE`
+  entry (index 3-7, 2x-48x sidereal), for the time the angle needs, then measure
+  the result from fresh readings after a confirmed stop and close the gap in up
+  to 4 passes (a pass that overshot is followed by one in the opposite direction
+  of the same axis). The other axis gets no command at all: a goto to "current RA,
+  new DEC" still turned the RA motor, because OnStep takes RA only to the whole
+  second (real capture: 12-20 arcsec of HA per DEC move, 0.6.12 reduced but could
+  not remove it). Rates are learned per axis and rate across moves; a first pass at
+  an unmeasured rate aims for 60% of the angle. Landing tolerance: DEC
+  max(10", 3%), RA max(20", 3%) (RA reads only to 1 s of time).
+  `IndiAxisMoveResult.measured_deg` is now the measured angle. The positive
+  directions are OnStep's MOTION_NORTH / MOTION_WEST jogs (as in 0.6.11); the sky
+  sign of a pass is measured, not assumed. Moves are slower than a goto (48x =
+  12 arcmin/s; ~5 s per degree plus about 4 s per pass to confirm the stop).
+  `IndiAxisMover(single_axis=False)` keeps the former goto for comparison.
+  The mock now models NORTH as a mechanical direction (it lowers DEC at pier side
+  east and when leaving the pole).
+
 - 0.6.12: a finite axis move (`move_dec_axis_deg` / `move_ra_axis_deg`) now
   holds the mechanical hour angle of the axis it does not move. With tracking
   off the published RA grows at the sidereal rate, and the goto target used
