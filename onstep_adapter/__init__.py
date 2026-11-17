@@ -1,6 +1,6 @@
 """INDI-only public API for the OnStep adapter."""
 
-from .indi_client import IndiStartupStatus, IndiSyncResult, OnStepIndiClient
+from .indi_client import IndiReconnectResult, IndiStartupStatus, IndiSyncResult, OnStepIndiClient
 from .indi_axis_motion import RA_UNDEFINED_AT_HOME, IndiAxisMoveResult, RaAxisUndefinedError
 from .indi_config import IndiRuntimeConfig, load_indi_config
 from .indi_focuser import IndiFocuser, IndiFocuserMoveResult, IndiFocuserSnapshot
@@ -28,7 +28,7 @@ OnStepClient = OnStepIndiClient
 OnStepMount = IndiMount
 OnStepFocuser = IndiFocuser
 
-__version__ = "0.6.13"
+__version__ = "0.6.14"
 
 __all__ = [
     "IndiFocuserMoveResult",
@@ -42,6 +42,7 @@ __all__ = [
     "IndiMeridianState",
     "IndiMountSnapshot",
     "IndiPositionResult",
+    "IndiReconnectResult",
     "IndiRuntimeConfig",
     "IndiStartupStatus",
     "IndiStopResult",

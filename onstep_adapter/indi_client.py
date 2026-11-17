@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
+import time
 from typing import Callable
 
 from .indi_config import IndiRuntimeConfig
@@ -63,6 +64,15 @@ class IndiSyncResult:
     requested_lon: float
     warning: str
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class IndiReconnectResult:
+    """Outcome of ``OnStepIndiClient.reconnect_device``."""
+
+    recovered: bool
+    elapsed_s: float
+    error: str | None
 
 
 class OnStepIndiClient:
@@ -353,6 +363,51 @@ class OnStepIndiClient:
             )
 
         return JogHandle(self._start_motion(f"{axis}_jog", run), lease)
+
+    @_traced
+    def reconnect_device(self, *, timeout: float = 20.0, poll_s: float = 0.25) -> IndiReconnectResult:
+        """Reopen the OnStep INDI device's link to the controller: DISCONNECT, then CONNECT
+        (what Ekos' Disconnect/Connect does), then wait for fresh OnStep status.
+
+        For a driver that lost its serial port while indiserver kept running (field incident
+        908a26b9: a USB over-current reset re-enumerated the adapter; the driver kept polling
+        the dead handle, OnStep Status stopped and the position sat in "Alert"). Never moves
+        the mount; refused while a move or jog is active. ``recovered`` is True only when a
+        fresh OnStep Status arrived after the CONNECT.
+        """
+        if not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        self._require_no_motion()
+        started = time.monotonic()
+        before = self._transport.get_property(self.device, "OnStep Status")
+        status_revision = before.revision if before is not None else -1
+        self._transport.issue_switch(self.device, "CONNECTION", "DISCONNECT", timeout=timeout)
+        deadline = started + timeout
+        while True:  # wait until the driver reports it let go of the port
+            connection = self._transport.get_property(self.device, "CONNECTION")
+            if connection is not None and connection.values.get("DISCONNECT") == "On":
+                break
+            if time.monotonic() >= deadline:
+                return IndiReconnectResult(
+                    False, time.monotonic() - started, "the driver did not disconnect"
+                )
+            time.sleep(poll_s)
+        self._transport.issue_switch(self.device, "CONNECTION", "CONNECT", timeout=timeout)
+        while True:  # fresh OnStep Status proves the controller answers again
+            connection = self._transport.get_property(self.device, "CONNECTION")
+            status = self._transport.get_property(self.device, "OnStep Status")
+            if (
+                connection is not None and connection.values.get("CONNECT") == "On"
+                and status is not None and status.revision > status_revision
+                and status.state.lower() != "alert"
+            ):
+                return IndiReconnectResult(True, time.monotonic() - started, None)
+            if time.monotonic() >= deadline:
+                return IndiReconnectResult(
+                    False, time.monotonic() - started,
+                    "no fresh OnStep status after reconnecting the driver",
+                )
+            time.sleep(poll_s)
 
     def meridian_status(self) -> IndiMeridianState:
         if self._policy is None:

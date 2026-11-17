@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 0.6.14: `mount.reconnect_device()` / `client.reconnect_device()` reopen the
+  INDI driver's link to the controller -- `CONNECTION` DISCONNECT, then CONNECT,
+  as Ekos' Disconnect/Connect does -- and wait for a fresh `OnStep Status`;
+  returns `IndiReconnectResult(recovered, elapsed_s, error)`. For a driver that
+  lost its serial port while indiserver kept running (field incident 908a26b9:
+  a USB over-current reset re-enumerated the adapter; no OnStep Status, the
+  position stuck in "Alert", unpark refused). Never moves the mount; refused
+  while a move or jog is active. The mock gains `lose_serial()` for this case.
+
 - 0.6.13: **finite axis moves no longer use a goto.** `move_dec_axis_deg()` /
   `move_ra_axis_deg()` drive only the requested axis with OnStep's single-axis
   motion (`TELESCOPE_MOTION_NS` / `TELESCOPE_MOTION_WE`) at a `TELESCOPE_SLEW_RATE`
