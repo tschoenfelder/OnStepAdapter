@@ -137,6 +137,10 @@ class SimulatedOnStepServer:
             "FOCUS_MAX": Prop("Number", "rw", {"FOCUS_MAX_VALUE": str(cfg.focuser_max)}, "Ok"),
             "FOCUS_ABORT_MOTION": Prop("Switch", "rw", {"ABORT": "Off"}, "Idle", "AtMostOne"),
         }
+        if cfg.polling_period_ms is not None:  # the real driver's standard INDI option
+            props["POLLING_PERIOD"] = Prop(
+                "Number", "rw", {"PERIOD_MS": f"{cfg.polling_period_ms:.12g}"}, "Ok"
+            )
         return props
 
     # --------------------------------------------------------------- lifecycle
@@ -536,6 +540,12 @@ class SimulatedOnStepServer:
         """The driver's poll period: `status_period_s` while a motion switch is On or a goto
         runs, `idle_publish_period_s` (when set) otherwise."""
         idle = self.config.idle_publish_period_s
+        polling = self._props.get("POLLING_PERIOD")
+        if idle is not None and polling is not None:
+            # Rig: POLLING_PERIOD 1000 ms gave a reading every ~1.5 s (serial round trips on
+            # top); a shorter period scales the same way, never below the in-motion cadence.
+            period_ms = float(polling.elements["PERIOD_MS"])
+            idle = max(self.config.status_period_s, idle * period_ms / 1000.0)
         mount = self._mount
         if idle is None or mount.motion == "SLEWING":
             return self.config.status_period_s

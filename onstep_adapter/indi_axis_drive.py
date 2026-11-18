@@ -62,6 +62,8 @@ ASSUMED_FAST_RATE_ARCSEC_PER_S = {8: 6.0 * 3600.0, 9: 12.0 * 3600.0}
 #: Rates a finite move may use, fastest first.
 DRIVE_RATE_INDICES = (9, 8, 7, 6, 5, 4, 3)
 SIDEREAL_ARCSEC_PER_S = 15.041
+#: How close a move must land, as a share of its angle (above the readout floors).
+LANDING_SHARE = 0.005
 #: A pass at a slow rate is planned to last at least this long when a slower rate allows it
 #: (start/stop latency then matters less than the angle moved).
 MIN_PASS_S = 0.75
@@ -127,7 +129,9 @@ def drive_tolerance_arcsec(axis: str, offset_arcsec: float) -> float:
     move gets a wider floor.
     """
     floor = 20.0 if axis == "ra" else 10.0
-    return max(floor, 0.03 * abs(offset_arcsec))
+    # Operator (2026-11-18 21:40): after 1/5/20 deg steps there and back, PARK still moved the
+    # mount ~0.2-0.4 deg -- the 3 % of each step had added up. 0.5 % keeps that below ~0.1 deg.
+    return max(floor, LANDING_SHARE * abs(offset_arcsec))
 
 
 @dataclass(frozen=True)
@@ -397,7 +401,8 @@ class SingleAxisDrive:
             # A slow rate is reached at once, so a speed-up estimate must not exceed it. The
             # fastest rates speed up for seconds (2eb2a5cb: 6 s to 3.27 deg/s) and stay
             # uncapped: a cap below their real top speed would make every stop late.
-            cruise_cap = math.inf if index in ASSUMED_FAST_RATE_ARCSEC_PER_S else 1.1 * rate
+            fast = index in ASSUMED_FAST_RATE_ARCSEC_PER_S
+            cruise_cap = math.inf if fast else rate
 
             model_accel = (
                 self.measured_accel.get((axis, index), ASSUMED_ACCEL_DEG_PER_S2) * 3600.0
@@ -414,12 +419,17 @@ class SingleAxisDrive:
                 # Until three moving readings measure the speed-up, it comes from the model
                 # (field capture 21:00: with two readings and no speed-up the stop of a 1 deg
                 # step came one reading late and overshot by 0.28 deg).
-                speed_up = accel if moving_readings >= 3 else max(accel, model_accel)
+                # A slow rate is at its speed at once: no speed-up to extrapolate (field run
+                # 2026-11-18 21:58: a 74" correction stopped at 49").
+                if not fast:
+                    speed_up = 0.0
+                else:
+                    speed_up = accel if moving_readings >= 3 else max(accel, model_accel)
                 capped = min(speed + speed_up * ahead, cruise_cap)
                 measured = (
                     reading[1] + speed * ahead + 0.5 * speed_up * ahead * ahead, capped
                 )
-                if moving_readings >= 2:
+                if moving_readings >= 2 or (not fast and moving_readings >= 1):
                     return measured
                 return max(measured[0], model[0]), max(measured[1], model[1])
 

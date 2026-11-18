@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.20 - Unreleased
+
+- A finite move sets the driver's `POLLING_PERIOD` to 250 ms (`FAST_POLLING_MS`) while it
+  runs and restores the previous value afterwards (also after a failure). Operator
+  (2026-11-18 21:58): the wait after a step must fit the step -- at the rig's 1000 ms the
+  driver reported a position every ~1.5 s, so proving the axis at rest took ~3 s after the
+  coast whatever the step size. A driver without the property, or one that refuses the
+  change, keeps its period (logged).
+- Moves land within 0.5 % (`LANDING_SHARE`, was 3 %; floors 10"/20" unchanged). Operator
+  (21:40): after 1/5/20 deg steps there and back PARK still moved the mount ~0.2-0.4 deg.
+- A slow-rate pass predicts no speed-up (it is at its speed at once) and uses its readings
+  from the first moving one: corrections no longer stop early.
+- Mock: the rig model publishes `POLLING_PERIOD` (1000 ms); its idle publish period follows
+  it (1.5 s at 1000 ms, scaled).
+
 ## 0.7.19 - Unreleased
 
 - Small (1 deg) steps land in one pass. Field capture 2026-11-18 21:00: five 1 deg DEC
