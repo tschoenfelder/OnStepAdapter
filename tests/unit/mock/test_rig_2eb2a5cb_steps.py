@@ -37,6 +37,11 @@ def rig_client(rig_sim):
         yield client
 
 
+def _landing(degrees: float) -> float:
+    """Operator (2026-11-18 21:40): steps there and back must add up -- 0.5 % (10" floor)."""
+    return max(10.0 / 3600.0, 0.005 * degrees) + 1e-9
+
+
 def _passes(sim, prop: str) -> int:
     return sum(
         1 for w in sim.writes if w.property == prop and "On" in (w.values or {}).values()
@@ -61,16 +66,17 @@ def test_a_dec_step_lands_on_target_promptly_and_never_moves_ra(rig_sim, rig_cli
     moved = abs(rig_sim.mount.dec_deg - dec_before)
     passes = _passes(rig_sim, "TELESCOPE_MOTION_NS")
     assert result.stop_confirmed
-    assert moved == pytest.approx(degrees, abs=degrees * 0.03), (moved, passes)
+    assert moved == pytest.approx(degrees, abs=_landing(degrees)), (moved, passes)
     assert rig_sim.mount.ha_h == ha_before
     assert passes <= 2, passes
     # One move plus at most one short correction, each followed by the at-rest check
-    # (two readings at the rig's 1.5 s idle cadence).
-    assert elapsed < _motion_s(degrees) + 9.0, (elapsed, passes)
+    # (two readings; POLLING_PERIOD is 250 ms during the move).
+    assert elapsed < _motion_s(degrees) + 5.0, (elapsed, passes)
 
 
 @pytest.mark.parametrize("degrees", STEPS_DEG)
 def test_an_ra_step_lands_on_target_promptly_and_never_moves_dec(rig_sim, rig_client, degrees):
+    """One RA move (plus at most one correction), within 0.5 %."""
     rig_client.mount.move_dec_axis_deg(1.0).wait(timeout=60)  # DEC first defines the RA axis
     dec_before, ha_before = rig_sim.mount.dec_deg, rig_sim.mount.ha_h
     started = time.monotonic()
@@ -79,21 +85,22 @@ def test_an_ra_step_lands_on_target_promptly_and_never_moves_dec(rig_sim, rig_cl
     moved = abs(rig_sim.mount.ha_h - ha_before) * 15.0
     passes = _passes(rig_sim, "TELESCOPE_MOTION_WE")
     assert result.stop_confirmed
-    assert moved == pytest.approx(degrees, abs=degrees * 0.03), (moved, passes)
+    assert moved == pytest.approx(degrees, abs=_landing(degrees)), (moved, passes)
     assert rig_sim.mount.dec_deg == dec_before
     assert passes <= 2, passes
-    assert elapsed < _motion_s(degrees) + 9.0, (elapsed, passes)
+    assert elapsed < _motion_s(degrees) + 5.0, (elapsed, passes)
 
 
-def test_repeated_steps_use_the_learned_braking_and_need_one_pass(rig_sim, rig_client):
-    """The first move learns the braking from its coast; the next ones need no correction."""
+def test_repeated_steps_use_the_learned_braking(rig_sim, rig_client):
+    """The first move learns the braking from its coast; later ones need at most one short
+    correction to land within 0.5 %."""
     for _ in range(3):
         rig_client.mount.move_dec_axis_deg(5.0).wait(timeout=120)
     before = _passes(rig_sim, "TELESCOPE_MOTION_NS")
     dec_before = rig_sim.mount.dec_deg
     rig_client.mount.move_dec_axis_deg(-5.0).wait(timeout=120)
-    assert _passes(rig_sim, "TELESCOPE_MOTION_NS") - before == 1
-    assert abs(rig_sim.mount.dec_deg - dec_before) == pytest.approx(5.0, abs=0.15)
+    assert _passes(rig_sim, "TELESCOPE_MOTION_NS") - before <= 2
+    assert abs(rig_sim.mount.dec_deg - dec_before) == pytest.approx(5.0, abs=_landing(5.0))
 
 
 def test_small_steps_land_in_one_pass_although_the_first_fast_reading_comes_late(
@@ -113,6 +120,17 @@ def test_small_steps_land_in_one_pass_although_the_first_fast_reading_comes_late
         elapsed = time.monotonic() - started
         passes = _passes(rig_sim, "TELESCOPE_MOTION_NS") - before
         moved = abs(rig_sim.mount.dec_deg - dec_before)
-        assert moved == pytest.approx(1.0, abs=0.03), (moved, passes)
-        assert passes == 1, (moved, passes)
-        assert elapsed < 7.0, elapsed
+        assert moved == pytest.approx(1.0, abs=_landing(1.0)), (moved, passes)
+        assert passes <= 2, (moved, passes)  # at most one short correction for 0.5 %
+        # Operator (21:58): the wait must fit the step -- with POLLING_PERIOD at 250 ms during
+        # the move a 1 deg step (correction included) is done in a few seconds.
+        assert elapsed < 6.0, elapsed
+
+
+def test_a_move_runs_at_fast_polling_and_restores_the_operator_period(rig_sim, rig_client):
+    """Operator (2026-11-18 21:58): the wait after a step must fit the step -- POLLING_PERIOD
+    is 250 ms while a move runs and the operator's own value again afterwards."""
+    rig_client.mount.move_dec_axis_deg(1.0).wait(timeout=60)
+    sent = [w.values for w in rig_sim.writes if w.property == "POLLING_PERIOD"]
+    assert [float(v["PERIOD_MS"]) for v in sent] == [250.0, 1000.0]
+    assert float(rig_sim._props["POLLING_PERIOD"].elements["PERIOD_MS"]) == 1000.0

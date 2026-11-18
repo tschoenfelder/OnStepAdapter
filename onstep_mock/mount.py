@@ -79,6 +79,9 @@ class SimConfig:
     idle_publish_period_s: float | None = None
     #: A published position is this old (s at speed 1): the driver reads it, then publishes.
     coordinate_lag_s: float = 0.0
+    #: The driver's POLLING_PERIOD (ms) when it publishes one (None: no such property). The
+    #: idle publish period then follows it: `idle_publish_period_s` at 1000 ms, scaled.
+    polling_period_ms: float | None = None
 
     @classmethod
     def rig_2eb2a5cb(cls, **overrides: object) -> SimConfig:
@@ -98,6 +101,7 @@ class SimConfig:
             manual_cruise_deg_per_s=((8, 1.635), (9, 3.27)),
             status_silent_while_manual=True, manual_motion_flags_slewing=False,
             status_period_s=0.26, idle_publish_period_s=1.5, coordinate_lag_s=0.1,
+            polling_period_ms=1000.0,
             auto_track_on_unpark=False,
         )
         values.update(overrides)

@@ -23,6 +23,8 @@ MIN_AXIS_MOVE_ARCSEC = 30.0
 #: is 1/cos(Dec) larger on the axis: 20 deg at Dec 60 is 40 deg). The DEC and altitude bounds
 #: still apply to every move.
 MAX_AXIS_MOVE_DEG = 45.0
+#: The driver's POLLING_PERIOD (ms) while a finite move runs (`IndiAxisMover._fast_polling`).
+FAST_POLLING_MS = 250.0
 #: Sidereal seconds per solar second: how fast the published RA of a
 #: stationary (tracking-off) mount grows.
 SIDEREAL_PER_SOLAR = 1.00273790935
@@ -265,6 +267,41 @@ class IndiAxisMover:
                 return snapshot.coordinates_live
             raise
 
+    def _fast_polling(self) -> Callable[[], None]:
+        """Set the driver's POLLING_PERIOD to `FAST_POLLING_MS` for one move; returns what
+        restores the previous value.
+
+        Operator (2026-11-18 21:58): the wait after a step must fit the step. At the rig's
+        1000 ms the driver reports a position every ~1.5 s, so proving a 1 deg step at rest
+        took ~3 s after its ~1.3 s coast whatever its size. Between moves the period is the
+        operator's own, for every INDI client. A driver without the property, or one that
+        refuses the change, keeps its period (logged)."""
+        prop = self.transport.get_property(self.device, "POLLING_PERIOD")
+        try:
+            previous = float(prop.values["PERIOD_MS"]) if prop is not None else None
+        except (KeyError, ValueError):
+            previous = None
+        if previous is None or previous <= FAST_POLLING_MS:
+            return lambda: None
+        try:
+            self.transport.set_number(
+                self.device, "POLLING_PERIOD", {"PERIOD_MS": FAST_POLLING_MS}
+            )
+        except Exception as exc:  # noqa: BLE001 -- a slower period only costs time
+            LOGGER.warning("POLLING_PERIOD not set to %.0f ms: %s", FAST_POLLING_MS, exc)
+            return lambda: None
+        LOGGER.info("POLLING_PERIOD %.0f -> %.0f ms for this move", previous, FAST_POLLING_MS)
+
+        def restore() -> None:
+            try:
+                self.transport.set_number(self.device, "POLLING_PERIOD", {"PERIOD_MS": previous})
+            except Exception as exc:  # noqa: BLE001 -- reported, never hidden
+                LOGGER.warning(
+                    "POLLING_PERIOD not restored to %.0f ms after the move: %s", previous, exc
+                )
+
+        return restore
+
     def _dec_outside_bound(self, dec_deg: float) -> float:
         """How far ``dec_deg`` lies outside the DEC bound (0 inside it)."""
         return max(self.min_dec_deg - dec_deg, dec_deg - self.max_dec_deg, 0.0)
@@ -494,15 +531,19 @@ class IndiAxisMover:
                     )
             if self.single_axis:
                 deadline = self._monotonic() + timeout_s + abs(offset_deg) * 3600.0 / 60.0
+                restore_polling = self._fast_polling()
 
                 def mark_issued() -> None:
                     nonlocal issued
                     issued = True
 
-                outcome = self._drive.run(
-                    axis, offset_deg, before, poll_s=poll_s, deadline=deadline,
-                    token=token, pause=pause, on_issue=mark_issued,
-                )
+                try:
+                    outcome = self._drive.run(
+                        axis, offset_deg, before, poll_s=poll_s, deadline=deadline,
+                        token=token, pause=pause, on_issue=mark_issued,
+                    )
+                finally:
+                    restore_polling()
                 latest = outcome.final
                 if axis == "dec":
                     self._learn_dec_direction(before, latest, offset_deg)
