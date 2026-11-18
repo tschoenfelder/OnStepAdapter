@@ -122,6 +122,11 @@ class IndiAxisMover:
         self._drive = SingleAxisDrive(self, utc_clock=utc_clock, monotonic=monotonic)
         self._lock = threading.Lock()
         self._ra_defined = False
+        #: (pier side, True when OnStep's NORTH raises the published DEC) as the last DEC move
+        #: measured it; None until then. Field capture fd84c75f (2026-11-18): from PARK at pier
+        #: side east NORTH RAISED DEC, while capture b977fe85 (after HOME) saw it lower DEC --
+        #: the sign is measured, never assumed.
+        self._north_raises_dec: tuple[str, bool] | None = None
 
     @property
     def ra_axis_defined(self) -> bool:
@@ -131,6 +136,42 @@ class IndiAxisMover:
     def mark_ra_undefined(self) -> None:
         """RA becomes undefined again, e.g. because the mount was sent HOME."""
         self._ra_defined = False
+        self._north_raises_dec = None
+
+    @staticmethod
+    def _fold_dec(dec_deg: float) -> float:
+        """A DEC beyond a pole, as the mount publishes it after crossing that pole."""
+        if dec_deg > 90.0:
+            return 180.0 - dec_deg
+        if dec_deg < -90.0:
+            return -180.0 - dec_deg
+        return dec_deg
+
+    def projected_dec_targets(self, before: IndiMountSnapshot, offset_deg: float) -> list[float]:
+        """Where a DEC-axis move of `offset_deg` can end: the measured direction when the last
+        DEC move at this pier side measured it, otherwise BOTH directions."""
+        assert before.dec_deg is not None
+        learned = self._north_raises_dec
+        if learned is not None and learned[0] == before.pier_side and not before.at_home:
+            sign = 1.0 if learned[1] else -1.0
+            return [self._fold_dec(before.dec_deg + sign * offset_deg)]
+        return [
+            self._fold_dec(before.dec_deg + offset_deg),
+            self._fold_dec(before.dec_deg - offset_deg),
+        ]
+
+    def _learn_dec_direction(
+        self, before: IndiMountSnapshot, after: IndiMountSnapshot, offset_deg: float
+    ) -> None:
+        if (
+            before.dec_deg is None or after.dec_deg is None or before.at_home
+            or after.pier_side != before.pier_side or before.pier_side is None
+        ):
+            return
+        delta = after.dec_deg - before.dec_deg
+        if abs(delta) * 3600.0 < 3.0:
+            return
+        self._north_raises_dec = (before.pier_side, (delta > 0.0) == (offset_deg > 0.0))
 
     def require_ra_defined(self, axis: Axis) -> None:
         """Refuse an RA move while RA is undefined; never sends anything."""
@@ -422,25 +463,35 @@ class IndiAxisMover:
                 axis, offset_deg, before.ra_hours, before.dec_deg, initial_ha_deg,
                 target_ra, target_dec, target_ha_deg,
             )
-            if not self.min_dec_deg <= target_dec <= self.max_dec_deg and not (
-                axis == "dec" and self._dec_outside_bound(target_dec)
-                < self._dec_outside_bound(before.dec_deg)
-            ):
-                # A DEC move that starts outside the bound (HOME is DEC +90)
-                # may still run when it only brings DEC closer to the bound:
-                # that is the DEC-first move RA needs at HOME.
-                raise RuntimeError(
-                    f"Projected DEC target {target_dec:+.3f} deg from "
-                    f"{before.dec_deg:+.3f} deg is outside configured bounds "
-                    f"{self.min_dec_deg:+.3f}..{self.max_dec_deg:+.3f} deg"
+            candidates = [target_dec]
+            if axis == "dec" and self.single_axis:
+                candidates = self.projected_dec_targets(before, offset_deg)
+            unknown_direction = len(candidates) > 1
+            for candidate in candidates:
+                if not self.min_dec_deg <= candidate <= self.max_dec_deg and not (
+                    axis == "dec" and self._dec_outside_bound(candidate)
+                    < self._dec_outside_bound(before.dec_deg)
+                ):
+                    # A DEC move that starts outside the bound (HOME is DEC +90)
+                    # may still run when it only brings DEC closer to the bound:
+                    # that is the DEC-first move RA needs at HOME.
+                    note = (
+                        " (which way this DEC move goes is measured by the first DEC move "
+                        "after connecting or HOME; until then both ways must stay inside)"
+                        if unknown_direction else ""
+                    )
+                    raise RuntimeError(
+                        f"Projected DEC target {candidate:+.3f} deg from "
+                        f"{before.dec_deg:+.3f} deg is outside configured bounds "
+                        f"{self.min_dec_deg:+.3f}..{self.max_dec_deg:+.3f} deg{note}"
+                    )
+                target_alt, _ = self._horizontal_from_equatorial(
+                    target_ha_deg, candidate
                 )
-            target_alt, _ = self._horizontal_from_equatorial(
-                target_ha_deg, target_dec
-            )
-            if target_alt < self.min_alt_deg - 1e-9:
-                raise RuntimeError(
-                    "Projected altitude leaves the local movement bound"
-                )
+                if target_alt < self.min_alt_deg - 1e-9:
+                    raise RuntimeError(
+                        "Projected altitude leaves the local movement bound"
+                    )
             if self.single_axis:
                 deadline = self._monotonic() + timeout_s + abs(offset_deg) * 3600.0 / 60.0
 
@@ -453,6 +504,8 @@ class IndiAxisMover:
                     token=token, pause=pause, on_issue=mark_issued,
                 )
                 latest = outcome.final
+                if axis == "dec":
+                    self._learn_dec_direction(before, latest, offset_deg)
                 if axis == "dec" and not latest.at_home:
                     self._ra_defined = True
                 return IndiAxisMoveResult(

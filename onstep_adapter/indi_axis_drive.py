@@ -80,6 +80,8 @@ STOP_LATENCY_S = 0.15
 ASSUMED_BRAKE_DEG_PER_S2 = 0.55
 #: A learned braking value is clipped into this range.
 BRAKE_RANGE_DEG_PER_S2 = (0.1, 20.0)
+#: A DEC move's coast ends at least this far inside the DEC bound.
+BOUND_MARGIN_DEG = 0.2
 #: A pass checks its stop this often (s), predicting the position between readings.
 PASS_POLL_S = 0.05
 #: How far past the last reading the position is predicted (a later reading is overdue).
@@ -289,6 +291,12 @@ class SingleAxisDrive:
             accel = 0.0  # arcsec/s^2 at `reading[0]`
             peak_speed = 0.0
             reading: tuple[float, float] | None = None  # (read at, moved)
+            reading_dec: float | None = None  # DEC of that reading
+            dec_direction = 0.0  # +1/-1: which way the published DEC goes in this pass
+            bound_stop = [False]
+            start_outside = (
+                mover._dec_outside_bound(before.dec_deg) if before.dec_deg is not None else 0.0
+            )
             interval_speed: float | None = None  # mean speed between the last two readings
             # A slow rate is reached at once, so a speed-up estimate must not exceed it. The
             # fastest rates speed up for seconds (2eb2a5cb: 6 s to 3.27 deg/s) and stay
@@ -304,7 +312,17 @@ class SingleAxisDrive:
 
             def past_stop_point(at: float) -> bool:
                 moved_at, speed_at = predict(at)
-                return moved_at + self._stop_distance(axis, index, speed_at) >= pass_target
+                stop = self._stop_distance(axis, index, speed_at)
+                if axis == "dec" and dec_direction and reading_dec is not None and reading:
+                    # Field capture fd84c75f: a move stopped AT the DEC bound coasted 8 deg
+                    # past it. Stop where the coast ends at the bound at the latest.
+                    final = reading_dec + dec_direction * (
+                        (moved_at - reading[1] + stop) / 3600.0 + BOUND_MARGIN_DEG
+                    )
+                    if mover._dec_outside_bound(final) > start_outside + 1e-9:
+                        bound_stop[0] = True
+                        return True
+                return moved_at + stop >= pass_target
             while self._monotonic() - started < limit_s:
                 pause(min(poll_s, PASS_POLL_S))
                 latest = mover.observe()
@@ -345,6 +363,10 @@ class SingleAxisDrive:
                         interval_speed = mean
                         peak_speed = max(peak_speed, speed)
                     reading = (read_at, moved_now)
+                    assert latest.dec_deg is not None
+                    if reading_dec is not None and latest.dec_deg != reading_dec:
+                        dec_direction = 1.0 if latest.dec_deg > reading_dec else -1.0
+                    reading_dec = latest.dec_deg
                     _LOG.debug(
                         "Axis drive reading: %.2f s moved %.0f\" at %.0f\"/s, %.0f\"/s^2",
                         read_at - started, moved_now, speed, accel,
@@ -378,6 +400,12 @@ class SingleAxisDrive:
                 moved_at_off = moved_now
             expected_coast_s = speed / (self.brake_deg_per_s2(axis, index) * 3600.0)
             latest = self._wait_at_rest(axis, before, latest, poll_s, pause, expected_coast_s)
+            if bound_stop[0]:
+                raise RuntimeError(
+                    f"DEC move stopped at {latest.dec_deg:+.2f} deg: going on would have passed "
+                    f"the configured DEC bound {mover.min_dec_deg:+.1f}..{mover.max_dec_deg:+.1f}"
+                    " deg"
+                )
             delta = mover._angle_delta(start_pos, self.position_deg(axis, latest)) * 3600.0
             if sky_sign == 0:
                 if abs(delta) < MIN_DETECTED_ARCSEC:
