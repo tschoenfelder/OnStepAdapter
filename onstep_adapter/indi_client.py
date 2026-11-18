@@ -402,18 +402,30 @@ class OnStepIndiClient:
         started = time.monotonic()
         before = self._transport.get_property(self.device, "OnStep Status")
         status_revision = before.revision if before is not None else -1
+        link = self._transport.get_property(self.device, "CONNECTION")
+        link_revision = link.revision if link is not None else -1
         self._transport.issue_switch(self.device, "CONNECTION", "DISCONNECT", timeout=timeout)
         deadline = started + timeout
-        while True:  # wait until the driver reports it let go of the port
+        # Wait until the driver reacts to the DISCONNECT: ANY newer CONNECTION vector counts.
+        # Field incident 469ebcee: the real driver went to DISCONNECT and back to CONNECT by
+        # itself within the same second; polling for the DISCONNECT state missed it and the
+        # reconnect was reported as failed although fresh status was already arriving.
+        while True:
             connection = self._transport.get_property(self.device, "CONNECTION")
-            if connection is not None and connection.values.get("DISCONNECT") == "On":
+            if connection is not None and connection.revision > link_revision:
                 break
+            if self._fresh_status_since(status_revision):
+                return IndiReconnectResult(True, time.monotonic() - started, None)
             if time.monotonic() >= deadline:
                 return IndiReconnectResult(
                     False, time.monotonic() - started, "the driver did not disconnect"
                 )
             time.sleep(poll_s)
-        self._transport.issue_switch(self.device, "CONNECTION", "CONNECT", timeout=timeout)
+        # Only CONNECT when the driver has not already reopened the port by itself.
+        time.sleep(poll_s)
+        connection = self._transport.get_property(self.device, "CONNECTION")
+        if connection is None or connection.values.get("CONNECT") != "On":
+            self._transport.issue_switch(self.device, "CONNECTION", "CONNECT", timeout=timeout)
         while True:  # fresh OnStep Status proves the controller answers again
             connection = self._transport.get_property(self.device, "CONNECTION")
             status = self._transport.get_property(self.device, "OnStep Status")
@@ -429,6 +441,15 @@ class OnStepIndiClient:
                     "no fresh OnStep status after reconnecting the driver",
                 )
             time.sleep(poll_s)
+
+    def _fresh_status_since(self, status_revision: int) -> bool:
+        connection = self._transport.get_property(self.device, "CONNECTION")
+        status = self._transport.get_property(self.device, "OnStep Status")
+        return (
+            connection is not None and connection.values.get("CONNECT") == "On"
+            and status is not None and status.revision > status_revision
+            and status.state.lower() != "alert"
+        )
 
     def meridian_status(self) -> IndiMeridianState:
         if self._policy is None:

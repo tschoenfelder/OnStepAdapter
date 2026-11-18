@@ -85,6 +85,10 @@ class SimulatedOnStepServer:
         #: `lose_serial()`: the driver lost its serial port (USB reset); a DISCONNECT +
         #: CONNECT of the INDI device reopens it.
         self._serial_lost = False
+        #: `lose_serial(driver_reconnects=True)`: the driver reopens its port by itself right
+        #: after a DISCONNECT (seen on the rig, 469ebcee) -- the next device tick sets CONNECT.
+        self._driver_reconnects = False
+        self._auto_connect_pending = False
         self._reject_next: dict[str, str] = {}
         self._focuser_target: int | None = None
         self._focuser_position = 15000.0
@@ -248,13 +252,17 @@ class SimulatedOnStepServer:
         with self._lock:
             self._status_frozen = frozen
 
-    def lose_serial(self) -> None:
+    def lose_serial(self, *, driver_reconnects: bool = False) -> None:
         """Field incident 908a26b9: the controller's USB serial adapter re-enumerated while
         indiserver and the driver kept running -- OnStep Status stops, the published
-        position goes "Alert" and stops changing, CONNECTION still says CONNECT=On."""
+        position goes "Alert" and stops changing, CONNECTION still says CONNECT=On.
+
+        ``driver_reconnects``: field incident 469ebcee -- the real driver went back to
+        CONNECT by itself within the same second of a DISCONNECT, with no CONNECT sent."""
         with self._lock:
             self._serial_lost = True
             self._status_frozen = True
+            self._driver_reconnects = driver_reconnects
 
     @property
     def serial_lost(self) -> bool:
@@ -483,6 +491,8 @@ class SimulatedOnStepServer:
         elif name == "CONNECTION" and element == "DISCONNECT":
             if not self._serial_lost:
                 return "the mock device stays connected"
+            if self._driver_reconnects:
+                self._auto_connect_pending = True
         elif name == "CONNECTION" and element == "CONNECT":
             if self._serial_lost and prop.elements.get("DISCONNECT") == "On":
                 self._serial_lost = False  # the driver reopened the (new) serial port
@@ -501,6 +511,14 @@ class SimulatedOnStepServer:
             time.sleep(self.config.tick_s)
             now = time.monotonic()
             with self._lock:
+                if self._auto_connect_pending:  # the driver reopened the port by itself
+                    self._auto_connect_pending = False
+                    self._serial_lost = False
+                    self._status_frozen = False
+                    connection = self._props["CONNECTION"]
+                    connection.elements = {"CONNECT": "On", "DISCONNECT": "Off"}
+                    connection.state = "Ok"
+                    self._publish("CONNECTION")
                 edge = self._mount.tick(now - last, now)
                 self._tick_peripherals(now - last, now)
                 if edge or now - self._last_publish >= self.config.status_period_s:
