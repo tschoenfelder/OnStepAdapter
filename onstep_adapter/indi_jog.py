@@ -253,13 +253,15 @@ class IndiAxisJogger:
     ) -> IndiMountSnapshot:
         stopped_polls = 0
         last_revision = latest.status_revision
-        deadline = time.monotonic() + 5.0
+        # See IndiAxisMover.check_allowing_status_gap (field incident e515713a).
+        deadline = time.monotonic() + 15.0
         while stopped_polls < 2:
             if time.monotonic() >= deadline:
                 raise TimeoutError("Jog stop was not confirmed")
             pause(max(poll_s, 0.15))
             sample = self.observe()
-            self.mover._check(sample, moving=True, require_fresh_coordinates=False)
+            if not self.mover.check_allowing_status_gap(sample):
+                continue
             if sample.pier_side != before.pier_side:
                 raise RuntimeError("Pier side changed after jog")
             if sample.status_revision <= last_revision:

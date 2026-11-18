@@ -426,3 +426,35 @@ def test_reconnect_device_accepts_a_driver_that_reconnects_by_itself(onstep_sim,
     sent = [w.values for w in onstep_sim.writes if w.property == "CONNECTION"]
     assert {"DISCONNECT": "On"} in sent
     assert onstep_client.mount.unpark().unparked_confirmed
+
+
+def test_a_status_gap_after_the_stop_does_not_abort_the_move(onstep_sim, onstep_client):
+    """Field incident e515713a: the real driver went quiet for 3.1 s after the stop commands;
+    the stop confirmation took that as a fault and sent an emergency ABORT."""
+    import threading
+
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    writes = len(onstep_sim.writes)
+
+    def freeze_after_first_stop() -> None:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if any(
+                w.property == "TELESCOPE_MOTION_NS" and "Off" in w.values.values()
+                for w in onstep_sim.writes[writes:]
+            ):
+                onstep_sim.freeze_status(True)
+                time.sleep(3.4)  # longer than the 3 s freshness limit
+                onstep_sim.freeze_status(False)
+                return
+            time.sleep(0.01)
+
+    gap = threading.Thread(target=freeze_after_first_stop, daemon=True)
+    gap.start()
+    result = onstep_client.mount.move_dec_axis_deg(0.2).wait(timeout=60)
+    gap.join(timeout=25)
+
+    assert result.stop_confirmed
+    sent = [w.property for w in onstep_sim.writes[writes:]]
+    assert "TELESCOPE_ABORT_MOTION" not in sent

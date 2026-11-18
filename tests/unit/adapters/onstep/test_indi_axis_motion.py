@@ -639,5 +639,40 @@ class StationaryDriftTests(unittest.TestCase):
         self.assertEqual(stops, [])
 
 
+
+class StatusGapTests(unittest.TestCase):
+    """Field incident e515713a: after a stop the real driver published no OnStep Status for
+    3.1 s; the 3 s freshness limit fired during the stop confirmation and sent an emergency
+    ABORT. A short gap is now a wait; anything else still stops the move."""
+
+    def mover(self):
+        return IndiAxisMover(
+            FakeTransport(), "LX200 OnStep", 50.336, 8.533, lambda: None, lambda: None,
+            monotonic=lambda: 0.0,
+        )
+
+    def test_a_short_status_gap_is_a_wait(self):
+        stale = snapshot(
+            status_live=False, status_age_ms=3100.0, blockers=("onstep_status_not_fresh",)
+        )
+        self.assertFalse(self.mover().check_allowing_status_gap(stale))
+
+    def test_a_fresh_sample_passes(self):
+        self.assertTrue(self.mover().check_allowing_status_gap(snapshot()))
+
+    def test_a_long_gap_or_a_real_fault_still_raises(self):
+        mover = self.mover()
+        long_gap = snapshot(
+            status_live=False, status_age_ms=9000.0, blockers=("onstep_status_not_fresh",)
+        )
+        fault = snapshot(
+            status_live=False, status_age_ms=3100.0,
+            blockers=("onstep_status_not_fresh", "onstep_limit_or_park_fault"),
+        )
+        for sample in (long_gap, fault, snapshot(at_limit=True)):
+            with self.subTest(sample=sample.blockers), self.assertRaises(RuntimeError):
+                mover.check_allowing_status_gap(sample)
+
+
 if __name__ == "__main__":
     unittest.main()
