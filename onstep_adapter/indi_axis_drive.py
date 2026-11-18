@@ -10,12 +10,19 @@ has no meaning anyway.
 So a finite move drives only the requested axis, with OnStep's manual motion
 (``TELESCOPE_MOTION_NS`` for DEC, ``TELESCOPE_MOTION_WE`` for RA) at one
 entry of ``TELESCOPE_SLEW_RATE``, for the time the remaining angle needs, and
-then measures what it achieved from fresh readings after a confirmed stop.
-Up to ``MAX_PASSES`` passes close the gap; each later pass uses the rate the
-earlier passes measured, and a pass that overshot is followed by one in the
-opposite direction of the same axis. A first pass at a rate that has not been
-measured yet aims for ``SEED_FRACTION`` of the angle, so an unknown real rate
-up to 1/SEED_FRACTION times the nominal one cannot overshoot.
+stops it from the LIVE position: as soon as the remaining angle is within the
+distance the axis still covers after the stop at its current speed (reaction
+time plus braking, ``v * STOP_LATENCY_S + v^2 / 2a``). It then measures what it
+achieved once fresh readings show the axis at rest. Up to ``MAX_PASSES`` passes
+close the gap; a pass that overshot is followed by one in the opposite
+direction of the same axis.
+
+Field capture 2eb2a5cb (2026-11-18) is the reference: at the fastest rate the
+rig reached 3.27 deg/s and needed ~10 deg to stop; the real lx200_OnStep
+driver published no OnStep Status while a motion switch was On and never
+flagged manual motion as slewing (so "at rest" is judged from the coordinates,
+which keep coming every ~0.26 s while a switch is On and every ~1.5 s after).
+The braking ``a`` is learned from each pass's coast.
 
 Direction: a positive DEC-axis angle is OnStep's ``MOTION_NORTH`` jog and a
 positive RA-axis angle its ``MOTION_WEST`` jog -- the mechanical jog
@@ -28,6 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 import math
 import time
 from typing import TYPE_CHECKING, Callable
@@ -38,6 +46,8 @@ from .indi_status import IndiMountSnapshot
 
 if TYPE_CHECKING:
     from .indi_axis_motion import Axis, IndiAxisMover
+
+_LOG = logging.getLogger(__name__)
 
 #: OnStep's ``:R0#``..``:R7#`` manual rates as multiples of sidereal (the
 #: ``TELESCOPE_SLEW_RATE`` indices 0..7).
@@ -52,29 +62,43 @@ ASSUMED_FAST_RATE_ARCSEC_PER_S = {8: 6.0 * 3600.0, 9: 12.0 * 3600.0}
 #: Rates a finite move may use, fastest first.
 DRIVE_RATE_INDICES = (9, 8, 7, 6, 5, 4, 3)
 SIDEREAL_ARCSEC_PER_S = 15.041
-#: A pass is planned to last at least this long when a slower rate allows it
+#: A pass at a slow rate is planned to last at least this long when a slower rate allows it
 #: (start/stop latency then matters less than the angle moved).
 MIN_PASS_S = 0.75
 #: A pass never lasts longer than this.
 MAX_PASS_S = 90.0
 MAX_PASSES = 8
-#: Field incident 56b54f01: a 0.5 s first pass at the fastest rate covered only 0.14 deg while
-#: the mount accelerated; the drive took that as the rate, planned an 8 s second pass and moved
-#: ~15 deg instead of 10. Three guards:
-#: - a pass may last at most this many times the previous one (a rate measured on a short,
-#:   ramp-dominated pass is never stretched far);
-PASS_GROWTH_LIMIT = 3.0
-#: - a first pass at a rate not yet measured lasts at least this long (so cruise, not the
-#:   ramp, dominates what it measures) -- only for the fast rates 8/9;
-MIN_FAST_FIRST_PASS_S = 1.0
-#: - every pass stops early from the LIVE position once the remaining angle is within the
-#:   distance it covers in this time at its rate (reading latency plus braking).
-LIVE_STOP_LEAD_S = 0.6
-SEED_FRACTION = 0.6
+#: Angles from this size on are driven at the fastest rate: the live braking stop bounds the
+#: speed, so a short move simply never gets fast. Smaller remainders (corrections) use the
+#: slower rates, where the reaction time costs only arcseconds.
+FAST_DRIVE_MIN_ARCSEC = 0.5 * 3600.0
+#: Time from the Off command to the axis braking, plus the age of a published reading
+#: (field capture 2eb2a5cb: braking began within ~0.05 s; readings lag ~0.1 s).
+STOP_LATENCY_S = 0.15
+#: Braking (deg/s^2) assumed until a pass measured it; 2eb2a5cb measured ~0.565. Slightly LOWER:
+#: it stops a little early, so a first move undershoots slightly rather than overshoots.
+ASSUMED_BRAKE_DEG_PER_S2 = 0.55
+#: A learned braking value is clipped into this range.
+BRAKE_RANGE_DEG_PER_S2 = (0.1, 20.0)
+#: A pass checks its stop this often (s), predicting the position between readings.
+PASS_POLL_S = 0.05
+#: How far past the last reading the position is predicted (a later reading is overdue).
+MAX_PREDICTION_S = 0.6
+#: Below this speed (arcsec/s) a coast says nothing about the braking.
+MIN_BRAKE_LEARN_SPEED = 0.2 * 3600.0
+#: Acceleration (deg/s^2) a fast pass's time limit allows for: deliberately LOW (a slower
+#: mount then still finishes the pass on its live stop, not on the limit).
+SLOW_ACCEL_DEG_PER_S2 = 0.25
+#: A pass stops at once when no fresh reading arrived for this long: it can no longer see
+#: where the axis is (2eb2a5cb: the first reading of a pass came up to 1.5 s after On).
+COORDINATE_SILENCE_STOP_S = 2.5
+#: The axis counts as at rest when two fresh readings agree to within this (RA reads to 1 s
+#: of time = 15 arcsec).
+AT_REST_ARCSEC = {"dec": 2.0, "ra": 20.0}
 #: Smallest change that counts as "the axis moved" in the first pass.
 MIN_DETECTED_ARCSEC = 3.0
-#: Wait for a fresh coordinate reading after a confirmed stop.
-FRESH_COORDINATES_TIMEOUT_S = 5.0
+#: Waiting for the axis to be at rest after a pass ends: this, plus its expected coast.
+AT_REST_TIMEOUT_S = 15.0
 
 
 def drive_tolerance_arcsec(axis: str, offset_arcsec: float) -> float:
@@ -125,6 +149,8 @@ class SingleAxisDrive:
         self._monotonic = monotonic
         #: Measured rate (arcsec/s) per (axis, rate index), learned across moves.
         self.measured_rate: dict[tuple[str, int], float] = {}
+        #: Measured braking (deg/s^2) per (axis, rate index), learned from each pass's coast.
+        self.measured_brake: dict[tuple[str, int], float] = {}
 
     # ---- positions ----------------------------------------------------------
     def position_deg(self, axis: Axis, snapshot: IndiMountSnapshot) -> float:
@@ -151,7 +177,12 @@ class SingleAxisDrive:
         ]
         scale = sum(ratios) / len(ratios) if ratios else 1.0
         choice = None
-        for index in DRIVE_RATE_INDICES:
+        indices = DRIVE_RATE_INDICES
+        if remaining_arcsec < FAST_DRIVE_MIN_ARCSEC:
+            indices = tuple(i for i in DRIVE_RATE_INDICES if i not in ASSUMED_FAST_RATE_ARCSEC_PER_S)
+        else:
+            indices = DRIVE_RATE_INDICES[:1]
+        for index in indices:
             measured = self.measured_rate.get((axis, index))
             if index in ASSUMED_FAST_RATE_ARCSEC_PER_S:  # no nominal: measured, or assumed high
                 # A controller whose measured rates run faster than nominal is assumed to run
@@ -178,17 +209,37 @@ class SingleAxisDrive:
             )
         transport.set_switch(device, "TELESCOPE_SLEW_RATE", elements[rate_index])
 
-    def _wait_fresh_coordinates(
-        self, after_revision: int, pause: Callable[[float], None], poll_s: float,
-    ) -> IndiMountSnapshot:
-        deadline = self._monotonic() + FRESH_COORDINATES_TIMEOUT_S
-        while True:
-            sample = self.mover.observe()
-            if sample.coordinates_revision > after_revision and sample.coordinates_live:
-                return sample
-            if self._monotonic() >= deadline:
-                raise TimeoutError("No fresh coordinates after the axis stopped")
-            pause(poll_s)
+    def brake_deg_per_s2(self, axis: str, index: int) -> float:
+        return self.measured_brake.get((axis, index), ASSUMED_BRAKE_DEG_PER_S2)
+
+    def _pass_limit_s(self, index: int, rate: float, angle_arcsec: float) -> float:
+        """The longest a pass may run. Its live stop normally ends it far earlier; this only
+        bounds a pass whose stop never triggers."""
+        if index in ASSUMED_FAST_RATE_ARCSEC_PER_S:
+            angle_deg = angle_arcsec / 3600.0
+            ramp_s = 2.0 * math.sqrt(angle_deg / SLOW_ACCEL_DEG_PER_S2)
+            limit = 2.0 + 1.5 * ramp_s + angle_deg  # + a 1 deg/s cruise for long moves
+        else:
+            limit = 1.5 + 1.5 * max(angle_arcsec / rate, MIN_PASS_S)
+        return min(limit, MAX_PASS_S)
+
+    def _stop_distance(self, axis: str, index: int, speed: float) -> float:
+        """Arcsec the axis still moves when Off is sent now at `speed` (arcsec/s): the
+        reaction time plus the braking distance."""
+        brake = self.brake_deg_per_s2(axis, index) * 3600.0
+        return speed * STOP_LATENCY_S + speed * speed / (2.0 * brake)
+
+    def _learn_brake(
+        self, axis: str, index: int, speed_at_off: float, coast_arcsec: float
+    ) -> None:
+        if speed_at_off < MIN_BRAKE_LEARN_SPEED:
+            return
+        low, high = BRAKE_RANGE_DEG_PER_S2
+        # A coast within the reaction time: a mount that stops (almost) at once.
+        braking = max(coast_arcsec - speed_at_off * STOP_LATENCY_S, 1.0)
+        fresh = min(max(speed_at_off * speed_at_off / (2.0 * braking) / 3600.0, low), high)
+        old = self.measured_brake.get((axis, index))
+        self.measured_brake[(axis, index)] = fresh if old is None else (old + fresh) / 2.0
 
     def run(
         self, axis: Axis, offset_deg: float, before: IndiMountSnapshot, *,
@@ -208,23 +259,21 @@ class SingleAxisDrive:
         samples = 0
         latest = before
         direction = sign
+
+        def along_of(snapshot: IndiMountSnapshot) -> float:
+            """Signed progress (arcsec) of `snapshot` in the requested direction."""
+            along = mover._angle_delta(start_pos, self.position_deg(axis, snapshot)) * 3600.0
+            return along * sky_sign if sky_sign else abs(along)
+
         while len(passes) < MAX_PASSES:
             remaining = requested - achieved  # > 0: keep going; < 0: overshot
             if abs(remaining) <= tolerance and passes:
                 break
             direction = sign if remaining > 0 else -sign
-            index, rate, measured = self._rate_for(axis, abs(remaining))
-            planned_s = abs(remaining) / rate
-            if not passes and not measured:
-                planned_s *= SEED_FRACTION
-            if index in ASSUMED_FAST_RATE_ARCSEC_PER_S and not measured:
-                planned_s = max(planned_s, MIN_FAST_FIRST_PASS_S)
-            if passes:
-                planned_s = min(
-                    planned_s, max(MIN_FAST_FIRST_PASS_S, PASS_GROWTH_LIMIT * passes[-1].moving_s)
-                )
-            planned_s = min(planned_s, MAX_PASS_S)
-            if self._monotonic() + planned_s >= deadline:
+            index, rate, _ = self._rate_for(axis, abs(remaining))
+            pass_target = abs(remaining)
+            limit_s = self._pass_limit_s(index, rate, pass_target)
+            if self._monotonic() + limit_s >= deadline:
                 raise TimeoutError("Axis move would not finish before its deadline")
             name, element = _ELEMENTS[(axis, direction)]
             self._set_rate(index)
@@ -233,48 +282,103 @@ class SingleAxisDrive:
             transport.issue_switch(device, name, element)
             started = self._monotonic()
             token.report("moving", fraction=max(0.0, achieved) / requested)
-            pass_target = abs(remaining)
-            # Stop early by the lead, but never before 3/4 of the pass: on a short pass the lead
-            # would otherwise stop it at the first reading and waste passes.
-            stop_at = max(pass_target - rate * LIVE_STOP_LEAD_S, 0.75 * pass_target)
             seen_revision = latest.coordinates_revision
-            while self._monotonic() - started < planned_s:
-                pause(min(poll_s, max(0.0, planned_s - (self._monotonic() - started))))
+            last_reading_at = started
+            moved_now = 0.0
+            speed = 0.0  # arcsec/s at `reading[0]`
+            accel = 0.0  # arcsec/s^2 at `reading[0]`
+            peak_speed = 0.0
+            reading: tuple[float, float] | None = None  # (read at, moved)
+            interval_speed: float | None = None  # mean speed between the last two readings
+            # A slow rate is reached at once, so a speed-up estimate must not exceed it. The
+            # fastest rates speed up for seconds (2eb2a5cb: 6 s to 3.27 deg/s) and stay
+            # uncapped: a cap below their real top speed would make every stop late.
+            cruise_cap = math.inf if index in ASSUMED_FAST_RATE_ARCSEC_PER_S else 1.1 * rate
+
+            def predict(at: float) -> tuple[float, float]:
+                """(moved, speed) at monotonic time `at`, from the last reading."""
+                assert reading is not None
+                ahead = min(max(0.0, at - reading[0]), MAX_PREDICTION_S)
+                capped = min(speed + accel * ahead, cruise_cap)
+                return reading[1] + speed * ahead + 0.5 * accel * ahead * ahead, capped
+
+            def past_stop_point(at: float) -> bool:
+                moved_at, speed_at = predict(at)
+                return moved_at + self._stop_distance(axis, index, speed_at) >= pass_target
+            while self._monotonic() - started < limit_s:
+                pause(min(poll_s, PASS_POLL_S))
                 latest = mover.observe()
                 samples += 1
+                now = self._monotonic()
                 token.report(
                     raw_status=getattr(latest, "raw_status", None),
                     fraction=self._estimated_fraction(
-                        achieved, direction * sign * rate * (self._monotonic() - started),
-                        requested,
+                        achieved, direction * sign * moved_now, requested
                     ),
                 )
-                if not mover.check_allowing_status_gap(latest):
-                    continue  # a short status gap while the driver is busy: next sample
-                if latest.pier_side != before.pier_side:
+                usable = mover.check_in_motion(latest)
+                if usable and latest.pier_side != before.pier_side:
                     raise RuntimeError("Pier side changed during an axis move")
-                if self._leaves_bound(before, latest):
+                if usable and self._leaves_bound(before, latest):
                     raise RuntimeError("Axis move reached the configured movement bound")
-                if (
-                    latest.coordinates_revision > seen_revision and latest.coordinates_live
+                fresh = (
+                    usable and latest.coordinates_revision > seen_revision
                     and latest.dec_deg is not None and latest.ra_hours is not None
-                ):
+                )
+                if fresh:
                     seen_revision = latest.coordinates_revision
-                    along = mover._angle_delta(start_pos, self.position_deg(axis, latest)) * 3600.0
-                    along = along * sky_sign if sky_sign else abs(along)
-                    moved_now = (along - achieved) * (direction * sign)
-                    if moved_now >= stop_at:
-                        break  # close enough: stop here, a later pass closes the rest
-            moving_s = self._monotonic() - started
+                    read_at = now - max(0.0, (latest.coordinates_age_ms or 0.0) / 1000.0)
+                    last_reading_at = now
+                    moved_now = (along_of(latest) - achieved) * (direction * sign)
+                    if reading is None and read_at - started > 0.05:
+                        # The first reading of a pass: at least its mean speed since the start
+                        # (a mount that is at full speed at once is then not missed).
+                        speed = min(max(0.0, moved_now) / (read_at - started), cruise_cap)
+                    elif reading is not None and read_at - reading[0] > 0.05:
+                        dt = read_at - reading[0]
+                        mean = max(0.0, (moved_now - reading[1]) / dt)
+                        # The axis speeds up between readings: the mean of an interval is its
+                        # speed half an interval ago (2eb2a5cb: +0.54 deg/s^2 at rate 9).
+                        if interval_speed is not None:
+                            accel = max(0.0, (mean - interval_speed) / dt)
+                        speed = min(mean + 0.5 * accel * dt, cruise_cap)
+                        interval_speed = mean
+                        peak_speed = max(peak_speed, speed)
+                    reading = (read_at, moved_now)
+                    _LOG.debug(
+                        "Axis drive reading: %.2f s moved %.0f\" at %.0f\"/s, %.0f\"/s^2",
+                        read_at - started, moved_now, speed, accel,
+                    )
+                elif now - last_reading_at > COORDINATE_SILENCE_STOP_S:
+                    break  # blind: stop, the next pass measures where the axis is
+                if reading is None:
+                    continue
+                # Between readings the axis keeps going: predict where it is NOW, so Off goes
+                # out at the right moment and not at the next reading (0.26 s at up to 3.3
+                # deg/s on the rig is ~0.9 deg).
+                if past_stop_point(now):
+                    break  # the axis coasts the rest of the way
+                horizon = now + 1.5 * PASS_POLL_S
+                if past_stop_point(horizon):
+                    # The stop point falls before the next check: wait for it exactly.
+                    low, high = now, horizon
+                    for _ in range(12):
+                        middle = 0.5 * (low + high)
+                        low, high = (low, middle) if past_stop_point(middle) else (middle, high)
+                    pause(max(0.0, high - self._monotonic()))
+                    break
+            off_at = self._monotonic()
+            moving_s = off_at - started
             transport.issue_switch_off(device, name, element)
             transport.issue_switch(device, "TELESCOPE_TRACK_STATE", "TRACK_OFF")
             token.report("confirming_stop")
-            stopped = self._confirm_stationary(before, latest, poll_s, pause)
-            latest = self._wait_fresh_coordinates(
-                stopped.coordinates_revision, pause, poll_s
-            )
-            position = self.position_deg(axis, latest)
-            delta = mover._angle_delta(start_pos, position) * 3600.0
+            if reading is not None:  # where the axis was, and how fast, when Off went out
+                moved_at_off, speed = predict(off_at)
+            else:
+                moved_at_off = moved_now
+            expected_coast_s = speed / (self.brake_deg_per_s2(axis, index) * 3600.0)
+            latest = self._wait_at_rest(axis, before, latest, poll_s, pause, expected_coast_s)
+            delta = mover._angle_delta(start_pos, self.position_deg(axis, latest)) * 3600.0
             if sky_sign == 0:
                 if abs(delta) < MIN_DETECTED_ARCSEC:
                     raise RuntimeError(
@@ -284,11 +388,24 @@ class SingleAxisDrive:
                 sky_sign = 1 if delta > 0 else -1
             new_achieved = delta * sky_sign
             moved = new_achieved - achieved
-            if moving_s > 0.2 and moved * (direction * sign) > 0:
-                fresh = abs(moved) / moving_s
+            if reading is not None:
+                self._learn_brake(axis, index, speed, moved * (direction * sign) - moved_at_off)
+            if peak_speed > 0.0 and index not in ASSUMED_FAST_RATE_ARCSEC_PER_S:
                 old = self.measured_rate.get((axis, index))
-                self.measured_rate[(axis, index)] = fresh if old is None else (old + fresh) / 2
-            passes.append(DrivePass(index, element, planned_s, moving_s, moved))
+                self.measured_rate[(axis, index)] = (
+                    peak_speed if old is None else (old + peak_speed) / 2
+                )
+            elif peak_speed > 0.0:  # the fastest speed seen so far at a fast rate
+                self.measured_rate[(axis, index)] = max(
+                    peak_speed, self.measured_rate.get((axis, index), 0.0)
+                )
+            passes.append(DrivePass(index, element, limit_s, moving_s, moved))
+            _LOG.info(
+                "Axis drive pass %d: %s %s at rate %d for %.2f s, aimed %.0f\", Off at %.0f\" "
+                "and %.0f\"/s, at rest after %.0f\" (braking now %.3f deg/s^2)",
+                len(passes), axis.upper(), element, index, moving_s, pass_target,
+                moved_at_off, speed, moved * (direction * sign), self.brake_deg_per_s2(axis, index),
+            )
             achieved = new_achieved
         if abs(requested - achieved) > tolerance:
             raise RuntimeError(
@@ -318,29 +435,46 @@ class SingleAxisDrive:
                 return True
         return False
 
-    def _confirm_stationary(
-        self, before: IndiMountSnapshot, latest: IndiMountSnapshot,
-        poll_s: float, pause: Callable[[float], None],
+    def _wait_at_rest(
+        self, axis: Axis, before: IndiMountSnapshot, latest: IndiMountSnapshot,
+        poll_s: float, pause: Callable[[float], None], expected_coast_s: float,
     ) -> IndiMountSnapshot:
-        stopped_polls = 0
-        last_revision = latest.status_revision
-        # Two fresh stationary samples at the driver's ~1.5 s cadence after a status gap of
-        # up to STATUS_GAP_GRACE_MS (field incident e515713a: 3.1 s) need more than 5 s.
-        deadline = self._monotonic() + 15.0
-        while stopped_polls < 2:
+        """Wait until the axis is at rest after Off, and return that reading.
+
+        At rest = two consecutive fresh coordinate readings agree (`AT_REST_ARCSEC`). OnStep's
+        :GU# cannot tell: on the real rig it never flags manual motion as slewing, and it is
+        silent while a switch is On (field capture 2eb2a5cb: "stopped" was confirmed from it
+        while the axis still coasted 8 deg). A fresh OnStep Status after Off must also show
+        tracking off (the TRACK_OFF sent with every stop)."""
+        mover = self.mover
+        deadline = self._monotonic() + AT_REST_TIMEOUT_S + expected_coast_s
+        seen_coordinates = latest.coordinates_revision
+        seen_status = latest.status_revision
+        tracking_off_seen = False
+        last_position: float | None = None
+        while True:
             if self._monotonic() >= deadline:
                 raise TimeoutError("Axis move stop was not confirmed")
-            pause(max(poll_s, 0.15))
-            sample = self.mover.observe()
-            if not self.mover.check_allowing_status_gap(sample):
+            pause(max(poll_s, 0.1))
+            sample = mover.observe()
+            if not mover.check_in_motion(sample):
                 continue
             if sample.pier_side != before.pier_side:
                 raise RuntimeError("Pier side changed after an axis move")
-            if sample.status_revision <= last_revision:
+            if sample.status_live and sample.status_revision > seen_status:
+                seen_status = sample.status_revision
+                tracking_off_seen = not sample.tracking
+            if (
+                sample.coordinates_revision <= seen_coordinates or not sample.coordinates_live
+                or sample.dec_deg is None or sample.ra_hours is None
+            ):
                 continue
-            last_revision = sample.status_revision
-            stopped_polls = (
-                stopped_polls + 1 if not sample.tracking and not sample.slewing else 0
+            seen_coordinates = sample.coordinates_revision
+            position = self.position_deg(axis, sample)
+            at_rest = last_position is not None and (
+                abs(mover._angle_delta(last_position, position)) * 3600.0
+                <= AT_REST_ARCSEC[axis]
             )
-            latest = sample
-        return latest
+            last_position = position
+            if at_rest and tracking_off_seen:
+                return sample

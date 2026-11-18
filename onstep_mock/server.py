@@ -526,10 +526,19 @@ class SimulatedOnStepServer:
                     self._publish("CONNECTION")
                 edge = self._mount.tick(now - last, now)
                 self._tick_peripherals(now - last, now)
-                if edge or now - self._last_publish >= self.config.status_period_s:
+                if edge or now - self._last_publish >= self._publish_period():
                     self._publish_mount(now)
                 self._changed.notify_all()
             last = now
+
+    def _publish_period(self) -> float:
+        """The driver's poll period: `status_period_s` while a motion switch is On or a goto
+        runs, `idle_publish_period_s` (when set) otherwise."""
+        idle = self.config.idle_publish_period_s
+        mount = self._mount
+        if idle is None or mount.manual_switch_on or mount.motion == "SLEWING":
+            return self.config.status_period_s
+        return idle
 
     def _tick_peripherals(self, dt: float, now: float) -> None:
         mount = self._mount
@@ -562,7 +571,8 @@ class SimulatedOnStepServer:
         if self._serial_lost:  # the driver republishes its last values, in Alert
             coords.state = "Alert"
             return
-        coords.elements = {"RA": f"{mount.ra_h():.8f}", "DEC": f"{mount.dec_deg:.8f}"}
+        ra_h, dec_deg = mount.published_pose()
+        coords.elements = {"RA": f"{ra_h:.8f}", "DEC": f"{dec_deg:.8f}"}
         if mount.fault:
             coords.state = "Alert"
         elif mount.motion == "SLEWING":
@@ -592,7 +602,8 @@ class SimulatedOnStepServer:
             for name in ("TELESCOPE_TRACK_STATE", "TELESCOPE_PARK", "TELESCOPE_HOME")
         }
         self._refresh_mount_props(now)
-        if not self._status_frozen:
+        silent = self.config.status_silent_while_manual and self._mount.manual_switch_on
+        if not self._status_frozen and not silent:
             self._publish("OnStep Status")
         self._publish("EQUATORIAL_EOD_COORD")
         self._publish("TELESCOPE_PIER_SIDE")

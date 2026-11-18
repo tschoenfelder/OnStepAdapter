@@ -268,7 +268,7 @@ class IndiAxisMotionTests(unittest.TestCase):
 
     def test_invalid_angles_never_command_motion(self):
         mover, fake, _ = self.make_mover([])
-        for angle in (0, 29 / 3600, 15.1, float("nan")):
+        for angle in (0, 29 / 3600, 45.1, float("nan")):
             with self.assertRaises(ValueError):
                 mover.move("dec", angle)
         self.assertEqual(fake.commands, [])

@@ -48,85 +48,103 @@ def test_park_returns_to_the_single_stored_pose(onstep_sim, onstep_client):
     assert (mount.ha_h, mount.dec_deg) == pytest.approx((0.0, 52.0))
 
 
-def test_axis_move_ends_on_target_without_tracking(onstep_sim, onstep_client):
-    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+@pytest.fixture
+def rig_sim():
+    """Finite axis moves need a physical mount: the rig model (field capture 2eb2a5cb) at
+    real speed, with fast gotos so HOME and PARK stay quick."""
+    with SimulatedOnStepServer(SimConfig.rig_2eb2a5cb(slew_deg_per_s=40.0)) as sim:
+        yield sim
+
+
+@pytest.fixture
+def rig_client(rig_sim):
+    from onstep_mock.testing import runtime_config, wait_for_live_status
+    from onstep_adapter import OnStepClient
+
+    with OnStepClient(config=runtime_config(rig_sim)) as client:
+        wait_for_live_status(client)
+        yield client
+
+
+def test_axis_move_ends_on_target_without_tracking(rig_sim, rig_client):
+    rig_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
     time.sleep(0.4)
-    ha_before = onstep_sim.mount.ha_h
+    ha_before = rig_sim.mount.ha_h
     # Positive DEC is OnStep's MOTION_NORTH jog (this mock raises DEC with it; on the real rig,
     # at pier side east, it lowers the published DEC). Only the DEC axis may move.
-    result = onstep_client.mount.move_dec_axis_deg(1.5).wait(timeout=30)
+    result = rig_client.mount.move_dec_axis_deg(1.5).wait(timeout=30)
 
     assert result.stop_confirmed
-    mount = onstep_sim.mount
+    mount = rig_sim.mount
     assert abs(mount.dec_deg - 40.0) == pytest.approx(1.5, abs=1.5 * 0.03)
     assert mount.ha_h == ha_before  # the RA axis never moved (field report b977fe85)
     assert not mount.tracking and mount.motion == "IDLE"
     assert mount.pier_side == "west"
 
 
-def test_first_move_after_connecting_must_be_dec(onstep_sim, onstep_client):
-    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+def test_first_move_after_connecting_must_be_dec(rig_sim, rig_client):
+    rig_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
     time.sleep(0.4)
-    writes = len(onstep_sim.writes)
-    assert not onstep_client.mount.ra_axis_defined
+    writes = len(rig_sim.writes)
+    assert not rig_client.mount.ra_axis_defined
 
     with pytest.raises(RaAxisUndefinedError, match="move the DEC axis first"):
-        onstep_client.mount.move_ra_axis_deg(1.0)
-    assert onstep_client.active_motion is None
-    assert len(onstep_sim.writes) == writes
+        rig_client.mount.move_ra_axis_deg(1.0)
+    assert rig_client.active_motion is None
+    assert len(rig_sim.writes) == writes
 
-    onstep_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
-    assert onstep_client.mount.ra_axis_defined
-    ha_before = onstep_sim.mount.ha_h
-    dec_before = onstep_sim.mount.dec_deg
-    result = onstep_client.mount.move_ra_axis_deg(1.0).wait(timeout=30)
+    rig_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
+    assert rig_client.mount.ra_axis_defined
+    ha_before = rig_sim.mount.ha_h
+    dec_before = rig_sim.mount.dec_deg
+    result = rig_client.mount.move_ra_axis_deg(1.0).wait(timeout=30)
     assert result.stop_confirmed
-    assert onstep_sim.mount.ha_h == pytest.approx(ha_before + 1.0 / 15.0, abs=0.01)
-    assert onstep_sim.mount.dec_deg == dec_before  # the DEC axis never moved
+    assert rig_sim.mount.ha_h == pytest.approx(ha_before + 1.0 / 15.0, abs=0.01)
+    assert rig_sim.mount.dec_deg == dec_before  # the DEC axis never moved
 
 
-def test_finite_axis_moves_never_send_a_goto(onstep_sim, onstep_client):
+def test_finite_axis_moves_never_send_a_goto(rig_sim, rig_client):
     """Field report b977fe85: a goto to "current RA, new DEC" also turns the RA motor (OnStep
     takes RA to the whole second). Finite moves use single-axis motion only."""
-    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    rig_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
     time.sleep(0.4)
-    writes = len(onstep_sim.writes)
-    onstep_client.mount.move_dec_axis_deg(0.2).wait(timeout=30)
-    onstep_client.mount.move_ra_axis_deg(-0.2).wait(timeout=30)
-    sent = {w.property for w in onstep_sim.writes[writes:]}
+    writes = len(rig_sim.writes)
+    rig_client.mount.move_dec_axis_deg(0.2).wait(timeout=30)
+    rig_client.mount.move_ra_axis_deg(-0.2).wait(timeout=30)
+    sent = {w.property for w in rig_sim.writes[writes:]}
     assert "EQUATORIAL_EOD_COORD" not in sent and "ON_COORD_SET" not in sent
     assert {"TELESCOPE_MOTION_NS", "TELESCOPE_MOTION_WE"} <= sent
 
 
-def test_going_home_requires_a_dec_move_before_ra_again(onstep_sim, onstep_client):
-    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+def test_going_home_requires_a_dec_move_before_ra_again(rig_sim, rig_client):
+    rig_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
     time.sleep(0.4)
-    onstep_client.mount.move_dec_axis_deg(1.0).wait(timeout=30)
-    assert onstep_client.mount.ra_axis_defined
+    rig_client.mount.move_dec_axis_deg(1.0).wait(timeout=30)
+    assert rig_client.mount.ra_axis_defined
 
-    onstep_client.mount.go_home().wait(timeout=30)
+    rig_client.mount.go_home().wait(timeout=30)
 
-    assert not onstep_client.mount.ra_axis_defined
-    writes = len(onstep_sim.writes)
+    assert not rig_client.mount.ra_axis_defined
+    writes = len(rig_sim.writes)
     with pytest.raises(RaAxisUndefinedError):
-        onstep_client.mount.move_ra_axis_deg(1.0)
-    assert len(onstep_sim.writes) == writes
+        rig_client.mount.move_ra_axis_deg(1.0)
+    assert len(rig_sim.writes) == writes
 
 
-def test_at_home_a_small_dec_move_comes_first_then_ra(onstep_sim, onstep_client):
-    onstep_client.mount.unpark()
-    onstep_client.mount.go_home().wait(timeout=30)
+def test_at_home_a_small_dec_move_comes_first_then_ra(rig_sim, rig_client):
+    rig_client.mount.unpark()
+    rig_client.mount.go_home().wait(timeout=30)
     time.sleep(0.4)
-    assert onstep_sim.mount.at_home
+    assert rig_sim.mount.at_home
     with pytest.raises(RaAxisUndefinedError):
-        onstep_client.mount.move_ra_axis_deg(1.0)
+        rig_client.mount.move_ra_axis_deg(1.0)
 
-    onstep_client.mount.move_dec_axis_deg(1.0).wait(timeout=30)
+    rig_client.mount.move_dec_axis_deg(1.0).wait(timeout=30)
 
-    mount = onstep_sim.mount
+    mount = rig_sim.mount
     # Single-axis motion lands within max(10", 3%) of the requested angle.
     assert mount.dec_deg == pytest.approx(89.0, abs=0.03) and not mount.at_home
-    assert onstep_client.mount.ra_axis_defined
+    assert rig_client.mount.ra_axis_defined
 
 
 def _hold(handle, seconds):
@@ -154,15 +172,15 @@ def test_jog_moves_while_held_and_stops_on_release(onstep_sim, onstep_client):
     assert ("TELESCOPE_MOTION_NS", {"MOTION_NORTH": "Off"}) in written
 
 
-def test_jog_stops_by_itself_when_it_is_not_renewed(onstep_sim, onstep_client):
-    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+def test_jog_stops_by_itself_when_it_is_not_renewed(rig_sim, rig_client):
+    rig_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
     time.sleep(0.4)
-    onstep_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
-    handle = onstep_client.mount.jog_ra(-1, rate_index=5, lease_s=0.3)
+    rig_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
+    handle = rig_client.mount.jog_ra(-1, rate_index=5, lease_s=0.3)
     result = handle.wait(timeout=10)  # nobody renews: the deadman ends it
 
     assert result.ended_by == "lease_expired" and result.moving_s < 1.0
-    assert onstep_sim.mount.motion == "IDLE"
+    assert rig_sim.mount.motion == "IDLE"
     assert not handle.renew()
 
 
@@ -276,7 +294,7 @@ def test_invalid_axis_move_is_refused_before_anything_starts(onstep_sim, onstep_
     onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
     writes = len(onstep_sim.writes)
     with pytest.raises(ValueError):
-        onstep_client.mount.move_dec_axis_deg(20.0)
+        onstep_client.mount.move_dec_axis_deg(46.0)
     assert onstep_client.active_motion is None
     assert len(onstep_sim.writes) == writes
 
@@ -428,42 +446,42 @@ def test_reconnect_device_accepts_a_driver_that_reconnects_by_itself(onstep_sim,
     assert onstep_client.mount.unpark().unparked_confirmed
 
 
-def test_a_status_gap_after_the_stop_does_not_abort_the_move(onstep_sim, onstep_client):
+def test_a_status_gap_after_the_stop_does_not_abort_the_move(rig_sim, rig_client):
     """Field incident e515713a: the real driver went quiet for 3.1 s after the stop commands;
     the stop confirmation took that as a fault and sent an emergency ABORT."""
     import threading
 
-    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    rig_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
     time.sleep(0.4)
-    writes = len(onstep_sim.writes)
+    writes = len(rig_sim.writes)
 
     def freeze_after_first_stop() -> None:
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if any(
                 w.property == "TELESCOPE_MOTION_NS" and "Off" in w.values.values()
-                for w in onstep_sim.writes[writes:]
+                for w in rig_sim.writes[writes:]
             ):
-                onstep_sim.freeze_status(True)
+                rig_sim.freeze_status(True)
                 time.sleep(3.4)  # longer than the 3 s freshness limit
-                onstep_sim.freeze_status(False)
+                rig_sim.freeze_status(False)
                 return
             time.sleep(0.01)
 
     gap = threading.Thread(target=freeze_after_first_stop, daemon=True)
     gap.start()
-    result = onstep_client.mount.move_dec_axis_deg(0.2).wait(timeout=60)
+    result = rig_client.mount.move_dec_axis_deg(0.2).wait(timeout=60)
     gap.join(timeout=25)
 
     assert result.stop_confirmed
-    sent = [w.property for w in onstep_sim.writes[writes:]]
+    sent = [w.property for w in rig_sim.writes[writes:]]
     assert "TELESCOPE_ABORT_MOTION" not in sent
 
 
 def test_a_coarse_dec_step_uses_the_fast_rates_and_lands_on_target(slow_sim, slow_client):
     """Operator request 2026-11-18: RA/Dec steps of 1, 5 and 20 degrees. At 48x a 20 degree
-    step took ~100 s; the drive now also uses TELESCOPE_SLEW_RATE 8/9 (here 1 and 2.5 deg/s),
-    planning a first pass at one of them with a deliberately high assumed rate."""
+    step took ~100 s; the drive now also uses TELESCOPE_SLEW_RATE 8/9 (here 1 and 2.5 deg/s,
+    reached at once and stopped at once: a mount without acceleration)."""
     dec_before, ha_before = slow_sim.mount.dec_deg, slow_sim.mount.ha_h
     started = time.monotonic()
     result = slow_client.mount.move_dec_axis_deg(10.0).wait(timeout=120)
@@ -480,10 +498,9 @@ def test_a_coarse_dec_step_uses_the_fast_rates_and_lands_on_target(slow_sim, slo
 
 @pytest.fixture
 def accelerating_sim():
-    """Manual motion that accelerates like the rig (field incident 56b54f01)."""
-    # The rig publishes status and coordinates only every ~1.5 s.
-    config = SimConfig(speed=1.0, manual_accel_deg_per_s2=1.2, status_period_s=1.5)
-    with SimulatedOnStepServer(config) as sim:
+    """Manual motion that accelerates like the rig (field incident 56b54f01; the kinematics
+    measured in field capture 2eb2a5cb replaced that incident's ~1.2 deg/s^2 estimate)."""
+    with SimulatedOnStepServer(SimConfig.rig_2eb2a5cb()) as sim:
         yield sim
 
 
