@@ -72,16 +72,33 @@ MAX_PASSES = 8
 #: speed, so a short move simply never gets fast. Smaller remainders (corrections) use the
 #: slower rates, where the reaction time costs only arcseconds.
 FAST_DRIVE_MIN_ARCSEC = 0.5 * 3600.0
-#: Time from the Off command to the axis braking, plus the age of a published reading
-#: (field capture 2eb2a5cb: braking began within ~0.05 s; readings lag ~0.1 s).
-STOP_LATENCY_S = 0.15
+#: Time from the Off command to the axis braking (field capture 2eb2a5cb: within ~0.05 s).
+STOP_LATENCY_S = 0.05
+#: A published reading shows where the axis was this long before it arrived (2eb2a5cb: the
+#: driver reads the position, then publishes it, ~0.1 s later at 3.3 deg/s).
+READING_LAG_S = 0.1
 #: Braking (deg/s^2) assumed until a pass measured it; 2eb2a5cb measured ~0.565. Slightly LOWER:
 #: it stops a little early, so a first move undershoots slightly rather than overshoots.
 ASSUMED_BRAKE_DEG_PER_S2 = 0.55
+#: Braking samples kept per (axis, rate) -- a new one within this share of a kept sample's
+#: speed is averaged into it.
+BRAKE_SAMPLES = 8
+BRAKE_SAME_SPEED_SHARE = 0.15
 #: A learned braking value is clipped into this range.
 BRAKE_RANGE_DEG_PER_S2 = (0.1, 20.0)
 #: A DEC move's coast ends at least this far inside the DEC bound.
 BOUND_MARGIN_DEG = 0.2
+#: Before a pass has two moving readings its progress comes from a model of the speed-up:
+#: start this long after On, then accelerate at this rate (deg/s^2) -- both learned per pass.
+#: Field capture 2026-11-18 21:00: after On the driver keeps its 1.5 s cycle until its next
+#: poll, so a 1 deg step was nearly over before the first fast reading and overshot by up to
+#: 0.28 deg. The rig fit (2eb2a5cb) is 0.39 s and 0.54 deg/s^2; the assumptions are a little
+#: EARLIER and FASTER, so an unlearned step stops early rather than late.
+ASSUMED_START_LATENCY_S = 0.3
+ASSUMED_ACCEL_DEG_PER_S2 = 0.6
+#: Learned speed-up values outside these ranges are ignored as measuring artefacts.
+START_LATENCY_RANGE_S = (0.0, 2.0)
+ACCEL_RANGE_DEG_PER_S2 = (0.05, 20.0)
 #: A pass checks its stop this often (s), predicting the position between readings.
 PASS_POLL_S = 0.05
 #: How far past the last reading the position is predicted (a later reading is overdue).
@@ -151,8 +168,13 @@ class SingleAxisDrive:
         self._monotonic = monotonic
         #: Measured rate (arcsec/s) per (axis, rate index), learned across moves.
         self.measured_rate: dict[tuple[str, int], float] = {}
-        #: Measured braking (deg/s^2) per (axis, rate index), learned from each pass's coast.
-        self.measured_brake: dict[tuple[str, int], float] = {}
+        #: Measured braking per (axis, rate index): (speed at Off arcsec/s, deg/s^2) samples,
+        #: learned from each pass's coast.
+        self.measured_brake: dict[tuple[str, int], list[tuple[float, float]]] = {}
+        #: Measured speed-up (deg/s^2) per (axis, fast rate index) and start latency (s) per
+        #: axis, learned from the readings of each pass.
+        self.measured_accel: dict[tuple[str, int], float] = {}
+        self.measured_start_latency: dict[str, float] = {}
 
     # ---- positions ----------------------------------------------------------
     def position_deg(self, axis: Axis, snapshot: IndiMountSnapshot) -> float:
@@ -181,7 +203,9 @@ class SingleAxisDrive:
         choice = None
         indices = DRIVE_RATE_INDICES
         if remaining_arcsec < FAST_DRIVE_MIN_ARCSEC:
-            indices = tuple(i for i in DRIVE_RATE_INDICES if i not in ASSUMED_FAST_RATE_ARCSEC_PER_S)
+            indices = tuple(
+                i for i in DRIVE_RATE_INDICES if i not in ASSUMED_FAST_RATE_ARCSEC_PER_S
+            )
         else:
             indices = DRIVE_RATE_INDICES[:1]
         for index in indices:
@@ -211,8 +235,26 @@ class SingleAxisDrive:
             )
         transport.set_switch(device, "TELESCOPE_SLEW_RATE", elements[rate_index])
 
-    def brake_deg_per_s2(self, axis: str, index: int) -> float:
-        return self.measured_brake.get((axis, index), ASSUMED_BRAKE_DEG_PER_S2)
+    def brake_deg_per_s2(self, axis: str, index: int, speed: float | None = None) -> float:
+        """The braking (deg/s^2) from `speed` (arcsec/s): interpolated between the speeds
+        passes measured it at (the rig brakes relatively weaker from low speed: a 1 deg step
+        from ~0.75 deg/s coasted 0.66 deg, the 20 deg steps imply ~0.56 deg/s^2), the nearest
+        one outside them, `ASSUMED_BRAKE_DEG_PER_S2` before any."""
+        samples = self.measured_brake.get((axis, index))
+        if not samples:
+            return ASSUMED_BRAKE_DEG_PER_S2
+        if speed is None:
+            return samples[-1][1]
+        ordered = sorted(samples)
+        if speed <= ordered[0][0]:
+            return ordered[0][1]
+        if speed >= ordered[-1][0]:
+            return ordered[-1][1]
+        for (v1, a1), (v2, a2) in zip(ordered, ordered[1:]):
+            if v1 <= speed <= v2:
+                share = (speed - v1) / (v2 - v1) if v2 > v1 else 0.0
+                return a1 + share * (a2 - a1)
+        return ordered[-1][1]
 
     def _pass_limit_s(self, index: int, rate: float, angle_arcsec: float) -> float:
         """The longest a pass may run. Its live stop normally ends it far earlier; this only
@@ -228,8 +270,54 @@ class SingleAxisDrive:
     def _stop_distance(self, axis: str, index: int, speed: float) -> float:
         """Arcsec the axis still moves when Off is sent now at `speed` (arcsec/s): the
         reaction time plus the braking distance."""
-        brake = self.brake_deg_per_s2(axis, index) * 3600.0
+        brake = self.brake_deg_per_s2(axis, index, speed) * 3600.0
         return speed * STOP_LATENCY_S + speed * speed / (2.0 * brake)
+
+    def _ramp_model(
+        self, axis: str, index: int, rate: float, elapsed_s: float
+    ) -> tuple[float, float]:
+        """(moved arcsec, speed arcsec/s) `elapsed_s` after On, from the speed-up model."""
+        latency = self.measured_start_latency.get(axis, ASSUMED_START_LATENCY_S)
+        moving_s = max(0.0, elapsed_s - latency)
+        if index not in ASSUMED_FAST_RATE_ARCSEC_PER_S:
+            return rate * moving_s, rate if moving_s > 0.0 else 0.0
+        accel = self.measured_accel.get((axis, index), ASSUMED_ACCEL_DEG_PER_S2) * 3600.0
+        return 0.5 * accel * moving_s * moving_s, accel * moving_s
+
+    def _learn_ramp(self, axis: str, index: int, ramp: list[tuple[float, float]]) -> None:
+        """Fit `moved = a/2 (t - latency)^2` to a fast pass's readings while it sped up."""
+        if index not in ASSUMED_FAST_RATE_ARCSEC_PER_S:
+            return
+        points = [point for point in ramp if point[1] > 30.0]
+        speeding_up: list[tuple[float, float]] = points[:2]
+        for previous, current, following in zip(points, points[1:], points[2:]):
+            before = (current[1] - previous[1]) / max(current[0] - previous[0], 1e-6)
+            after = (following[1] - current[1]) / max(following[0] - current[0], 1e-6)
+            if after < 1.02 * before:
+                break  # reached its top speed
+            speeding_up.append(following)
+        if len(speeding_up) < 2:
+            return
+        (t1, m1), (t2, m2) = speeding_up[0], speeding_up[-1]
+        if t2 - t1 < 0.2:
+            return
+        slope = (math.sqrt(m2) - math.sqrt(m1)) / (t2 - t1)  # sqrt(a/2)
+        if slope <= 0.0:
+            return
+        accel = 2.0 * slope * slope / 3600.0
+        latency = t1 - math.sqrt(m1) / slope
+        if not ACCEL_RANGE_DEG_PER_S2[0] <= accel <= ACCEL_RANGE_DEG_PER_S2[1]:
+            return
+        if not START_LATENCY_RANGE_S[0] <= latency <= START_LATENCY_RANGE_S[1]:
+            return
+        old_accel = self.measured_accel.get((axis, index))
+        self.measured_accel[(axis, index)] = (
+            accel if old_accel is None else (old_accel + accel) / 2.0
+        )
+        old_latency = self.measured_start_latency.get(axis)
+        self.measured_start_latency[axis] = (
+            latency if old_latency is None else (old_latency + latency) / 2.0
+        )
 
     def _learn_brake(
         self, axis: str, index: int, speed_at_off: float, coast_arcsec: float
@@ -240,8 +328,14 @@ class SingleAxisDrive:
         # A coast within the reaction time: a mount that stops (almost) at once.
         braking = max(coast_arcsec - speed_at_off * STOP_LATENCY_S, 1.0)
         fresh = min(max(speed_at_off * speed_at_off / (2.0 * braking) / 3600.0, low), high)
-        old = self.measured_brake.get((axis, index))
-        self.measured_brake[(axis, index)] = fresh if old is None else (old + fresh) / 2.0
+        samples = self.measured_brake.setdefault((axis, index), [])
+        for position, (speed, brake) in enumerate(samples):
+            if abs(speed - speed_at_off) <= BRAKE_SAME_SPEED_SHARE * max(speed, speed_at_off):
+                samples[position] = ((speed + speed_at_off) / 2.0, (brake + fresh) / 2.0)
+                break
+        else:
+            samples.append((speed_at_off, fresh))
+        del samples[:-BRAKE_SAMPLES]
 
     def run(
         self, axis: Axis, offset_deg: float, before: IndiMountSnapshot, *,
@@ -291,6 +385,8 @@ class SingleAxisDrive:
             accel = 0.0  # arcsec/s^2 at `reading[0]`
             peak_speed = 0.0
             reading: tuple[float, float] | None = None  # (read at, moved)
+            moving_readings = 0
+            ramp: list[tuple[float, float]] = []  # (s since On, moved) of every reading
             reading_dec: float | None = None  # DEC of that reading
             dec_direction = 0.0  # +1/-1: which way the published DEC goes in this pass
             bound_stop = [False]
@@ -303,12 +399,29 @@ class SingleAxisDrive:
             # uncapped: a cap below their real top speed would make every stop late.
             cruise_cap = math.inf if index in ASSUMED_FAST_RATE_ARCSEC_PER_S else 1.1 * rate
 
+            model_accel = (
+                self.measured_accel.get((axis, index), ASSUMED_ACCEL_DEG_PER_S2) * 3600.0
+                if index in ASSUMED_FAST_RATE_ARCSEC_PER_S else 0.0
+            )
+
             def predict(at: float) -> tuple[float, float]:
-                """(moved, speed) at monotonic time `at`, from the last reading."""
-                assert reading is not None
-                ahead = min(max(0.0, at - reading[0]), MAX_PREDICTION_S)
-                capped = min(speed + accel * ahead, cruise_cap)
-                return reading[1] + speed * ahead + 0.5 * accel * ahead * ahead, capped
+                """(moved, speed) at monotonic time `at`: from the readings once two of them
+                show the axis moving, from the speed-up model before that (the larger)."""
+                model = self._ramp_model(axis, index, rate, at - started)
+                if reading is None:
+                    return model
+                ahead = min(max(0.0, at - reading[0]) + READING_LAG_S, MAX_PREDICTION_S)
+                # Until three moving readings measure the speed-up, it comes from the model
+                # (field capture 21:00: with two readings and no speed-up the stop of a 1 deg
+                # step came one reading late and overshot by 0.28 deg).
+                speed_up = accel if moving_readings >= 3 else max(accel, model_accel)
+                capped = min(speed + speed_up * ahead, cruise_cap)
+                measured = (
+                    reading[1] + speed * ahead + 0.5 * speed_up * ahead * ahead, capped
+                )
+                if moving_readings >= 2:
+                    return measured
+                return max(measured[0], model[0]), max(measured[1], model[1])
 
             def past_stop_point(at: float) -> bool:
                 moved_at, speed_at = predict(at)
@@ -363,6 +476,9 @@ class SingleAxisDrive:
                         interval_speed = mean
                         peak_speed = max(peak_speed, speed)
                     reading = (read_at, moved_now)
+                    ramp.append((read_at - started, moved_now))
+                    if moved_now > MIN_DETECTED_ARCSEC:
+                        moving_readings += 1
                     assert latest.dec_deg is not None
                     if reading_dec is not None and latest.dec_deg != reading_dec:
                         dec_direction = 1.0 if latest.dec_deg > reading_dec else -1.0
@@ -373,14 +489,12 @@ class SingleAxisDrive:
                     )
                 elif now - last_reading_at > COORDINATE_SILENCE_STOP_S:
                     break  # blind: stop, the next pass measures where the axis is
-                if reading is None:
-                    continue
                 # Between readings the axis keeps going: predict where it is NOW, so Off goes
                 # out at the right moment and not at the next reading (0.26 s at up to 3.3
                 # deg/s on the rig is ~0.9 deg).
                 if past_stop_point(now):
                     break  # the axis coasts the rest of the way
-                horizon = now + 1.5 * PASS_POLL_S
+                horizon = now + 3.0 * PASS_POLL_S  # a loop round can take longer than a poll
                 if past_stop_point(horizon):
                     # The stop point falls before the next check: wait for it exactly.
                     low, high = now, horizon
@@ -394,11 +508,9 @@ class SingleAxisDrive:
             transport.issue_switch_off(device, name, element)
             transport.issue_switch(device, "TELESCOPE_TRACK_STATE", "TRACK_OFF")
             token.report("confirming_stop")
-            if reading is not None:  # where the axis was, and how fast, when Off went out
-                moved_at_off, speed = predict(off_at)
-            else:
-                moved_at_off = moved_now
-            expected_coast_s = speed / (self.brake_deg_per_s2(axis, index) * 3600.0)
+            # Where the axis was, and how fast, when Off went out.
+            moved_at_off, speed = predict(off_at)
+            expected_coast_s = speed / (self.brake_deg_per_s2(axis, index, speed) * 3600.0)
             latest = self._wait_at_rest(axis, before, latest, poll_s, pause, expected_coast_s)
             if bound_stop[0]:
                 raise RuntimeError(
@@ -418,6 +530,7 @@ class SingleAxisDrive:
             moved = new_achieved - achieved
             if reading is not None:
                 self._learn_brake(axis, index, speed, moved * (direction * sign) - moved_at_off)
+            self._learn_ramp(axis, index, ramp)
             if peak_speed > 0.0 and index not in ASSUMED_FAST_RATE_ARCSEC_PER_S:
                 old = self.measured_rate.get((axis, index))
                 self.measured_rate[(axis, index)] = (
@@ -432,7 +545,8 @@ class SingleAxisDrive:
                 "Axis drive pass %d: %s %s at rate %d for %.2f s, aimed %.0f\", Off at %.0f\" "
                 "and %.0f\"/s, at rest after %.0f\" (braking now %.3f deg/s^2)",
                 len(passes), axis.upper(), element, index, moving_s, pass_target,
-                moved_at_off, speed, moved * (direction * sign), self.brake_deg_per_s2(axis, index),
+                moved_at_off, speed, moved * (direction * sign),
+                self.brake_deg_per_s2(axis, index, speed),
             )
             achieved = new_achieved
         if abs(requested - achieved) > tolerance:

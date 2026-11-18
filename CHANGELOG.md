@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.19 - Unreleased
+
+- Small (1 deg) steps land in one pass. Field capture 2026-11-18 21:00: five 1 deg DEC
+  steps; two overshot by 0.17-0.28 deg and needed one or two correction passes (a few
+  seconds each). After a motion switch turns On the real driver keeps its 1.5 s cycle until
+  its next poll, so a 1 deg step is nearly over before the first fast reading, and with two
+  readings the drive had no speed-up estimate yet. Now:
+  - until a pass has two (for the speed-up: three) moving readings, its progress comes from
+    a learned speed-up model (start latency + acceleration, fitted from each fast pass;
+    assumed 0.3 s / 0.6 deg/s^2 before that, a little earlier and faster than the rig);
+  - braking is learned per speed (`measured_brake` keeps up to 8 speed samples and
+    interpolates), since the rig brakes relatively weaker from low speed;
+  - the reading lag (`READING_LAG_S`, 0.1 s) is modelled apart from the stop latency
+    (`STOP_LATENCY_S`, now 0.05 s).
+- Mock: after a switch turns On the rig model keeps its idle publish cycle until its next
+  publish (no publish edge when a delayed motion command takes effect).
+
 ## 0.7.18 - Unreleased
 
 - A DEC move never runs past the DEC bound. Field capture fd84c75f: from PARK at pier side

@@ -389,8 +389,8 @@ class VirtualMount:
             self.pending_manual = [item for item in self.pending_manual if item[0] > now]
             for _, axis, direction in sorted(due):
                 if not self.parked and not self.fault:
+                    # No publish edge: the real driver reports the start only at its next poll.
                     self._apply_manual(axis, direction)
-                    edge = True
         if self.tracking:
             self.ha_h = wrap_hours(self.ha_h + dt * SIDEREAL_RATE / 3600.0)
         if self.guiding(now):
