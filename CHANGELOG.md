@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.18 - Unreleased
+
+- A DEC move never runs past the DEC bound. Field capture fd84c75f: from PARK at pier side
+  east, NORTH raised DEC (51.8 -> 71.9 deg); the next +20 deg step was projected as
+  "positive lowers DEC" (51.9 deg), started, was stopped by the in-motion check at 80.0 deg
+  and coasted on to 88.3 deg. Now:
+  - the pre-check uses the direction the last DEC move at this pier side measured
+    (`IndiAxisMover.projected_dec_targets`); until one has (after connecting or HOME), BOTH
+    directions must stay inside the bound;
+  - a DEC pass stops so that its coast ends `BOUND_MARGIN_DEG` (0.2 deg) inside the bound,
+    and the move then fails with "DEC move stopped at ... would have passed the configured
+    DEC bound".
+
 ## 0.7.17 - Unreleased
 
 - Finite single-axis moves (`move_dec_axis_deg` / `move_ra_axis_deg`) land on target in
