@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 import threading
 import time
@@ -81,6 +82,12 @@ class IndiReconnectResult:
     recovered: bool
     elapsed_s: float
     error: str | None
+
+
+_LOG = logging.getLogger(__name__)
+#: How long `connect()` waits for a disconnected OnStep INDI device to connect after it sent
+#: CONNECT (the driver opens the serial port and reads the controller first).
+DEVICE_CONNECT_TIMEOUT_S = 20.0
 
 
 class OnStepIndiClient:
@@ -196,7 +203,7 @@ class OnStepIndiClient:
             self._transport.connect(timeout=timeout)
             connected = self._transport.wait_property(self.device, "CONNECTION", timeout=timeout)
             if connected.values.get("CONNECT") != "On":
-                raise ConnectionError("OnStep INDI device is not connected")
+                self._connect_disconnected_device(timeout=max(timeout, DEVICE_CONNECT_TIMEOUT_S))
 
             reported_time = self._transport.wait_property(self.device, "TIME_UTC", timeout=timeout)
             timestamp = datetime.fromisoformat(reported_time.values["UTC"])
@@ -384,6 +391,37 @@ class OnStepIndiClient:
             )
 
         return JogHandle(self._start_motion(f"{axis}_jog", run), lease)
+
+    def _connect_disconnected_device(self, *, timeout: float) -> None:
+        """The OnStep INDI device exists but is not connected to the controller -- typically
+        right after an indiserver restart (INDI drivers do not connect by themselves; field
+        diag 4f73ce56). Operator decision 2026-11-18: connect it here instead of refusing,
+        and say so in the log. Never moves the mount."""
+        _LOG.warning(
+            "INDI device %r is not connected (e.g. after an indiserver restart): sending "
+            "CONNECT", self.device,
+        )
+        self._transport.issue_switch(self.device, "CONNECTION", "CONNECT", timeout=timeout)
+        deadline = time.monotonic() + timeout
+        while True:
+            connection = self._transport.get_property(self.device, "CONNECTION")
+            if (
+                connection is not None and connection.values.get("CONNECT") == "On"
+                and connection.state.lower() == "ok"
+            ):
+                _LOG.warning("INDI device %r connected by this client", self.device)
+                return
+            if connection is not None and connection.state.lower() == "alert":
+                raise ConnectionError(
+                    f"OnStep INDI device {self.device!r} refused CONNECT (Alert) -- check the "
+                    "serial port in its driver settings"
+                )
+            if time.monotonic() >= deadline:
+                raise ConnectionError(
+                    f"OnStep INDI device {self.device!r} is not connected and did not connect "
+                    f"within {timeout:.0f} s of CONNECT"
+                )
+            time.sleep(0.1)
 
     @_traced
     def reconnect_device(self, *, timeout: float = 20.0, poll_s: float = 0.25) -> IndiReconnectResult:

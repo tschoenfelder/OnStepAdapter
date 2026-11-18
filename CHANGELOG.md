@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.16 - Unreleased
+
+- `connect()` connects an OnStep INDI device that is not connected instead of
+  refusing with "OnStep INDI device is not connected". Field diag 4f73ce56: after
+  an indiserver restart the driver ran but was not connected (INDI drivers do not
+  connect by themselves). It sends CONNECT, waits up to `DEVICE_CONNECT_TIMEOUT_S`
+  (20 s) for CONNECT=On/Ok, logs a WARNING before and after, and raises a
+  `ConnectionError` naming the reason on an Alert or timeout. Never moves the mount.
+  The mock gains `SimConfig.start_device_connected`.
+
 ## 0.7.15 - Unreleased
 
 - Coarse single-axis steps no longer overshoot on an accelerating mount. Field

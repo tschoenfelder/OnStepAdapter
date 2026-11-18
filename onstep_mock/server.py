@@ -99,7 +99,12 @@ class SimulatedOnStepServer:
     def _build_properties(self) -> dict[str, Prop]:
         cfg = self.config
         props = {
-            "CONNECTION": Prop("Switch", "rw", {"CONNECT": "On", "DISCONNECT": "Off"}, "Ok"),
+            "CONNECTION": Prop(
+                "Switch", "rw",
+                {"CONNECT": "On", "DISCONNECT": "Off"} if cfg.start_device_connected
+                else {"CONNECT": "Off", "DISCONNECT": "On"},
+                "Ok" if cfg.start_device_connected else "Idle",
+            ),
             "OnStep Status": Prop("Text", "ro", {":GU# return": "", "Error": "None"}, "Ok"),
             "EQUATORIAL_EOD_COORD": Prop("Number", "rw", {"RA": "0", "DEC": "0"}),
             "ON_COORD_SET": Prop("Switch", "rw", {"TRACK": "Off", "SLEW": "On", "SYNC": "Off"}, "Ok"),
