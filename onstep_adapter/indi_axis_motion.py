@@ -19,7 +19,10 @@ from .indi_axis_drive import SingleAxisDrive
 
 Axis = Literal["ra", "dec"]
 MIN_AXIS_MOVE_ARCSEC = 30.0
-MAX_AXIS_MOVE_DEG = 15.0
+#: Operator request 2026-11-18: 1/5/20 degree RA/Dec steps in one move (an RA step on the sky
+#: is 1/cos(Dec) larger on the axis: 20 deg at Dec 60 is 40 deg). The DEC and altitude bounds
+#: still apply to every move.
+MAX_AXIS_MOVE_DEG = 45.0
 #: Sidereal seconds per solar second: how fast the published RA of a
 #: stationary (tracking-off) mount grows.
 SIDEREAL_PER_SOLAR = 1.00273790935
@@ -198,6 +201,27 @@ class IndiAxisMover:
             }
             if only_stale and age is not None and age <= STATUS_GAP_GRACE_MS:
                 return False
+            raise
+
+    def check_in_motion(self, snapshot: IndiMountSnapshot) -> bool:
+        """The safety check while an axis move drives or coasts.
+
+        Field capture 2eb2a5cb: the real lx200_OnStep driver publishes NO OnStep Status while a
+        motion switch is On (7 s and longer), yet its coordinates keep coming every ~0.26 s.
+        So stale OnStep Status alone is not a fault here: True when `snapshot` passed the full
+        check, or when the only problem is stale OnStep Status and the coordinates are live;
+        False when it is stale and the coordinates are not (the caller waits, and stops a pass
+        that stays blind). Every other blocker raises.
+        """
+        try:
+            self._check(snapshot, moving=True, require_fresh_coordinates=False)
+            return True
+        except RuntimeError:
+            only_stale = set(snapshot.blockers) & self._FORBIDDEN_IN_MOTION == {
+                "onstep_status_not_fresh"
+            }
+            if only_stale:
+                return snapshot.coordinates_live
             raise
 
     def _dec_outside_bound(self, dec_deg: float) -> float:

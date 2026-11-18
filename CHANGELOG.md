@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.17 - Unreleased
+
+- Finite single-axis moves (`move_dec_axis_deg` / `move_ra_axis_deg`) land on target in
+  one pass. Field capture 2eb2a5cb: a 10 deg DEC move swung back and forth (77.7, 58.0,
+  63.6 deg) and gave up after 8 passes, because the real lx200_OnStep driver publishes
+  no OnStep Status while a motion switch is On (the live stop was skipped on every such
+  sample), the stop allowed ~0.5 deg for braking where the rig needs ~10 deg at full
+  speed, and "stopped" was taken from :GU#, which never flags manual motion (a pass was
+  measured while the axis still coasted). Now:
+  - a pass stops from the live position, predicted between readings, as soon as the
+    remaining angle equals the distance the axis still covers (reaction time plus
+    braking `v^2 / 2a`); `a` is learned from each pass's coast;
+  - stale OnStep Status alone no longer interrupts a move while coordinates are live
+    (`IndiAxisMover.check_in_motion`); a pass with no fresh reading for 2.5 s stops;
+  - "at rest" is two agreeing fresh coordinate readings plus a fresh status with
+    tracking off;
+  - angles from 0.5 deg use the fastest rate; the probe pass, pass-growth limit and
+    timer-based pass lengths are gone.
+- `MAX_AXIS_MOVE_DEG` is 45 (was 15): a 20 deg step is one move (operator request
+  2026-11-18: 1/5/20 deg RA/Dec steps); the DEC and altitude bounds still apply.
+- Mock: `SimConfig.rig_2eb2a5cb()` models the rig as that capture recorded it (start
+  0.39 s after On, 0.54 deg/s^2 up to 3.27 deg/s, braking 0.565 deg/s^2, no status
+  while a switch is On, :GU# never "slewing" in manual motion, 0.26 s / 1.5 s reading
+  cadence, 0.1 s reading lag); tests check it reproduces two recorded passes.
+
 ## 0.7.16 - Unreleased
 
 - `connect()` connects an OnStep INDI device that is not connected instead of

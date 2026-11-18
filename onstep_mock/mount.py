@@ -61,6 +61,47 @@ class SimConfig:
     #: Field incident 56b54f01: the real rig needed ~1.2 deg/s^2 to reach ~1.8 deg/s at the
     #: fastest rate, so a 0.5 s pass covered only 0.14 deg.
     manual_accel_deg_per_s2: float = 0.0
+    #: Braking after a motion switch goes off (deg/s^2 at speed 1); 0 = the acceleration.
+    manual_brake_deg_per_s2: float = 0.0
+    #: Delay from a motion switch turning On / Off to the axis reacting (s at speed 1).
+    manual_start_latency_s: float = 0.0
+    manual_stop_latency_s: float = 0.0
+    #: Cruise speed (deg/s at speed 1) per slew-rate index where it differs from
+    #: ``RATE_MULTIPLIERS`` (rates 8/9 depend on the firmware's configured maximum).
+    manual_cruise_deg_per_s: tuple[tuple[int, float], ...] = ()
+    #: The real lx200_OnStep driver publishes no OnStep Status while a motion switch is On.
+    status_silent_while_manual: bool = False
+    #: The real :GU# never flags manual motion as slewing, not even while it brakes.
+    manual_motion_flags_slewing: bool = True
+    #: Publish period (status and coordinates) while no motion switch is On and no goto runs;
+    #: None = ``status_period_s``. The real driver polls every ~1.5 s then, every ~0.26 s while
+    #: a motion switch is On.
+    idle_publish_period_s: float | None = None
+    #: A published position is this old (s at speed 1): the driver reads it, then publishes.
+    coordinate_lag_s: float = 0.0
+
+    @classmethod
+    def rig_2eb2a5cb(cls, **overrides: object) -> SimConfig:
+        """The real rig as field capture 2eb2a5cb (2026-11-18) recorded it.
+
+        Fitted from two DEC passes at slew rate 9 (OnStep Status, coordinates and switch
+        replies of the INDI capture): the axis starts ~0.39 s after MOTION_NORTH On, speeds up
+        at 0.54 deg/s^2 to 3.27 deg/s, reacts to Off at once and brakes at ~0.565 deg/s^2
+        (pass 3 coasted from 67.1 to 77.7 deg); a published reading lagged ~0.1 s. No OnStep Status while the switch was On (7 s
+        gaps), :GU# showed "not slewing" throughout, coordinates came every 0.26 s while the
+        switch was On and every 1.5 s otherwise. Rate 8 was not exercised: half of rate 9, as
+        OnStepX defines it.
+        """
+        values: dict[str, object] = dict(
+            manual_accel_deg_per_s2=0.54, manual_brake_deg_per_s2=0.565,
+            manual_start_latency_s=0.39, manual_stop_latency_s=0.02,
+            manual_cruise_deg_per_s=((8, 1.635), (9, 3.27)),
+            status_silent_while_manual=True, manual_motion_flags_slewing=False,
+            status_period_s=0.26, idle_publish_period_s=1.5, coordinate_lag_s=0.1,
+            auto_track_on_unpark=False,
+        )
+        values.update(overrides)
+        return cls(**values)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -123,13 +164,18 @@ class VirtualMount:
     target_dec_deg: float = 0.0
     stop_at: float = 0.0
     manual_ns: int = 0  # +1 north, -1 south
+    #: The direction last commanded per axis (`manual_ns`/`manual_we` follow it after latency).
+    manual_ns_cmd: int = 0
+    manual_we_cmd: int = 0
     #: How NORTH changes the published DEC after leaving the pole (None: from the pier side).
     ns_dec_sign: float | None = None
     manual_we: int = 0  # +1 west (HA up), -1 east
     #: Manual motion with acceleration: the current speed and the last direction per axis
     #: (kept while braking after the direction switched off).
-    manual_ns_speed: float = 0.0
+    manual_ns_speed: float = 0.0  # signed: + is the NORTH / WEST jog
     manual_we_speed: float = 0.0
+    #: Motion-switch changes waiting for `SimConfig.manual_*_latency_s`: (apply at, axis, dir).
+    pending_manual: list[tuple[float, str, int]] = field(default_factory=list)
     manual_ns_last: int = 0
     manual_we_last: int = 0
     slew_rate: int = 6
@@ -161,10 +207,35 @@ class VirtualMount:
     def ra_h(self) -> float:
         return (self.lst_h() - self.ha_h) % 24.0
 
+    def published_pose(self) -> tuple[float, float]:
+        """(RA hours, DEC deg) as the driver publishes them: `SimConfig.coordinate_lag_s` old
+        while a manual motion moves the axes."""
+        lag = self.config.coordinate_lag_s / self.config.speed
+        if not lag or self.motion != "MANUAL":
+            return self.ra_h(), self.dec_deg
+        ns_sign = self.ns_dec_sign
+        if ns_sign is None:
+            ns_sign = -1.0 if self.pier_side == "east" else 1.0
+        dec = self.dec_deg - ns_sign * self.manual_ns_speed * lag
+        ha = wrap_hours(self.ha_h - self.manual_we_speed * lag / 15.0)
+        return (self.lst_h() - ha) % 24.0, dec
+
     # ---- derived state ----------------------------------------------------
     @property
     def slewing(self) -> bool:
         return self.motion != "IDLE"
+
+    @property
+    def flags_slewing(self) -> bool:
+        """What :GU# reports (the real one never flags manual motion)."""
+        if self.motion == "MANUAL" and not self.config.manual_motion_flags_slewing:
+            return False
+        return self.slewing
+
+    @property
+    def manual_switch_on(self) -> bool:
+        """A motion switch is On (as the client commanded it, before any latency)."""
+        return bool(self.manual_ns_cmd or self.manual_we_cmd)
 
     def guiding(self, now: float) -> bool:
         return now < self.guiding_until
@@ -173,7 +244,7 @@ class VirtualMount:
         flags = ""
         if not self.tracking:
             flags += "n"
-        if not self.slewing:
+        if not self.flags_slewing:
             flags += "N"
         flags += "P" if self.parked else "p"
         if self.at_home:
@@ -239,6 +310,8 @@ class VirtualMount:
         if kind == "radec" and not -90.0 <= dec_deg <= 90.0:
             return "target DEC out of range"
         self.manual_ns = self.manual_we = 0
+        self.manual_ns_cmd = self.manual_we_cmd = 0
+        self.pending_manual.clear()
         self.target_kind = kind
         self.target_ra_h, self.target_dec_deg = ra_h % 24.0, dec_deg
         self.motion = "SLEWING"
@@ -251,6 +324,23 @@ class VirtualMount:
         if self.fault or self.parked:
             return "manual motion refused while parked or faulted"
         if axis == "ns":
+            self.manual_ns_cmd = direction
+        else:
+            self.manual_we_cmd = direction
+        latency = (
+            self.config.manual_start_latency_s if direction else self.config.manual_stop_latency_s
+        ) / self.config.speed
+        if latency > 0.0:
+            # The controller handles the commands of an axis in order: an Off sent right
+            # after an On (shorter stop latency) still lands after it.
+            earlier = [at for at, pending_axis, _ in self.pending_manual if pending_axis == axis]
+            self.pending_manual.append((max([now + latency, *earlier]), axis, direction))
+            return None
+        self._apply_manual(axis, direction)
+        return None
+
+    def _apply_manual(self, axis: str, direction: int) -> None:
+        if axis == "ns":
             self.manual_ns = direction
             self.manual_ns_last = direction or self.manual_ns_last
         else:
@@ -262,7 +352,6 @@ class VirtualMount:
                 self.at_home = False
         elif self.motion == "MANUAL" and not self.config.manual_accel_deg_per_s2:
             self.motion = "IDLE"
-        return None
 
     def guide(self, axis: str, direction: int, ms: float, now: float) -> str | None:
         if self.fault or self.parked:
@@ -275,6 +364,8 @@ class VirtualMount:
 
     def abort(self, now: float) -> None:
         self.manual_ns = self.manual_we = 0
+        self.manual_ns_cmd = self.manual_we_cmd = 0
+        self.pending_manual.clear()
         self.guiding_until = 0.0
         if self.motion != "IDLE":
             self.motion = "STOPPING"
@@ -293,6 +384,13 @@ class VirtualMount:
         """Advance the pose by dt seconds; return True when a state edge occurred."""
         self.elapsed_s += dt
         edge = False
+        if self.pending_manual:
+            due = [item for item in self.pending_manual if item[0] <= now]
+            self.pending_manual = [item for item in self.pending_manual if item[0] > now]
+            for _, axis, direction in sorted(due):
+                if not self.parked and not self.fault:
+                    self._apply_manual(axis, direction)
+                    edge = True
         if self.tracking:
             self.ha_h = wrap_hours(self.ha_h + dt * SIDEREAL_RATE / 3600.0)
         if self.guiding(now):
@@ -323,26 +421,37 @@ class VirtualMount:
 
     def _step_manual_with_acceleration(self, dt: float) -> bool:
         """Manual motion that ramps up to the selected rate and brakes after it is switched
-        off (`SimConfig.manual_accel_deg_per_s2`); IDLE once both axes have stopped."""
-        cruise = RATE_MULTIPLIERS[self.slew_rate] * SIDEREAL_DEG_PER_S * self.config.speed
-        dv = self.config.manual_accel_deg_per_s2 * self.config.speed * dt
+        off (`SimConfig.manual_accel_deg_per_s2` / `manual_brake_deg_per_s2`); a reversal
+        brakes to a stop before it speeds up the other way. IDLE once both axes stopped."""
+        config = self.config
+        cruise = dict(config.manual_cruise_deg_per_s).get(
+            self.slew_rate, RATE_MULTIPLIERS[self.slew_rate] * SIDEREAL_DEG_PER_S
+        ) * config.speed
+        accel = config.manual_accel_deg_per_s2 * config.speed * config.speed * dt
+        brake = (
+            config.manual_brake_deg_per_s2 or config.manual_accel_deg_per_s2
+        ) * config.speed * config.speed * dt
 
-        def ramp(speed: float, on: bool) -> float:
-            target = cruise if on else 0.0
-            return min(target, speed + dv) if speed < target else max(target, speed - dv)
+        def ramp(velocity: float, direction: int) -> float:
+            target = direction * cruise
+            if velocity * target < 0.0 or abs(target) < abs(velocity):  # braking
+                if velocity > 0.0:
+                    return max(velocity - brake, max(target, 0.0))
+                return min(velocity + brake, min(target, 0.0))
+            if target > velocity:
+                return min(target, velocity + accel)
+            return max(target, velocity - accel)
 
-        self.manual_ns_speed = ramp(self.manual_ns_speed, bool(self.manual_ns))
-        self.manual_we_speed = ramp(self.manual_we_speed, bool(self.manual_we))
-        if self.manual_ns_last and self.dec_deg >= 90.0:
-            self.ns_dec_sign = -float(self.manual_ns_last)
+        self.manual_ns_speed = ramp(self.manual_ns_speed, self.manual_ns)
+        self.manual_we_speed = ramp(self.manual_we_speed, self.manual_we)
+        if self.manual_ns_speed and self.dec_deg >= 90.0:
+            self.ns_dec_sign = -math.copysign(1.0, self.manual_ns_speed)
         ns_sign = self.ns_dec_sign
         if ns_sign is None:
             ns_sign = -1.0 if self.pier_side == "east" else 1.0
-        self.dec_deg = max(
-            -90.0, min(90.0, self.dec_deg + ns_sign * self.manual_ns_last * self.manual_ns_speed * dt)
-        )
-        self.ha_h = wrap_hours(self.ha_h + self.manual_we_last * self.manual_we_speed * dt / 15.0)
-        if not (self.manual_ns or self.manual_we) and not (
+        self.dec_deg = max(-90.0, min(90.0, self.dec_deg + ns_sign * self.manual_ns_speed * dt))
+        self.ha_h = wrap_hours(self.ha_h + self.manual_we_speed * dt / 15.0)
+        if not (self.manual_ns or self.manual_we or self.pending_manual) and not (
             self.manual_ns_speed or self.manual_we_speed
         ):
             self.motion = "IDLE"
