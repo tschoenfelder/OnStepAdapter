@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.12 - Unreleased
+
+- `reconnect_device()` no longer reports a driver that reconnects by itself as a
+  failure. Field incident 469ebcee: after the DISCONNECT the real driver went to
+  DISCONNECT and back to CONNECT within the same second, fresh OnStep status
+  returned, but the 0.25 s poll for the DISCONNECT state missed it and the call
+  returned "the driver did not disconnect" after 20 s. Any newer `CONNECTION`
+  vector now counts as the driver's reaction, CONNECT is sent only if the driver
+  is not already connected, and fresh `OnStep Status` decides success. The mock's
+  `lose_serial(driver_reconnects=True)` reproduces it.
+
 ## 0.7.11 - Unreleased
 
 - Re-arm both INDI manual-motion vectors with an explicit all-Off update before

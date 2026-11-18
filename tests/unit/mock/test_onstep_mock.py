@@ -406,3 +406,23 @@ def test_reconnect_device_is_refused_while_a_move_runs(onstep_sim, onstep_client
         onstep_client.mount.reconnect_device()
     handle.release()
     handle.wait(timeout=10)
+
+
+def test_reconnect_device_accepts_a_driver_that_reconnects_by_itself(onstep_sim, onstep_client):
+    """Field incident 469ebcee: after DISCONNECT the real driver went back to CONNECT by itself
+    within the same second (no CONNECT sent) and status came back -- but reconnect_device()
+    polled for the DISCONNECT state, missed it, and reported "the driver did not disconnect"."""
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=True)
+    time.sleep(0.4)
+    onstep_sim.lose_serial(driver_reconnects=True)
+    time.sleep(3.5)
+    assert "onstep_status_not_fresh" in onstep_client.mount.get_status().blockers
+
+    result = onstep_client.mount.reconnect_device(timeout=10.0)
+
+    assert result.recovered, result.error
+    assert result.elapsed_s < 5.0
+    assert not onstep_sim.serial_lost
+    sent = [w.values for w in onstep_sim.writes if w.property == "CONNECTION"]
+    assert {"DISCONNECT": "On"} in sent
+    assert onstep_client.mount.unpark().unparked_confirmed
