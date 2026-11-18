@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+import threading
+import time
 from typing import Callable
 
 from .indi_config import IndiRuntimeConfig
@@ -16,11 +19,16 @@ from .indi_guiding import (
     IndiGuideCorrectionResult,
     IndiGuidePulseResult,
 )
+from .indi_jog import (
+    DEFAULT_JOG_DURATION_S, DEFAULT_JOG_LEASE_S, IndiAxisJogger, IndiJogResult,
+    JogHandle, JogLease, validate_jog_request,
+)
 from .indi_home import IndiHomeRouteResult, IndiHomeRouter, IndiPositionResult, IndiUnparkResult
 from .indi_meridian import IndiMeridianState, IndiMeridianSupervisor, classify_meridian
 from .indi_mode import (
     IndiModeController, IndiModeStatus, IndiModeTransitionResult, IndiOperatingMode,
 )
+from .indi_motion import MotionHandle, MotionToken
 from .indi_mount import IndiMount
 from .indi_status import IndiMountSnapshot, IndiStatusReader
 from .indi_stop import IndiStopResult, stop_mount_via_indi
@@ -30,6 +38,7 @@ from .indi_terrestrial import (
     IndiTerrestrialMoveResult,
     IndiTerrestrialRecoveryResult,
 )
+from .indi_trace import TraceRecorder, as_recorder, traced_operation
 from .indi_transport import IndiTransport
 from .indi_gu import decode_gu
 from .meridian_policy import MeridianPolicy, derive_meridian_policy
@@ -38,6 +47,9 @@ TIME_SITE_SYNC_WARNING = (
     "Changing OnStep time or location while another client is tracking or "
     "slewing may change pointing and invalidate that client's safety calculations."
 )
+
+
+_traced = traced_operation(lambda client: client.trace)
 
 
 @dataclass(frozen=True)
@@ -62,6 +74,15 @@ class IndiSyncResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class IndiReconnectResult:
+    """Outcome of ``OnStepIndiClient.reconnect_device``."""
+
+    recovered: bool
+    elapsed_s: float
+    error: str | None
+
+
 class OnStepIndiClient:
     """Own this application's INDI connection, mount, focuser and supervisor."""
 
@@ -77,6 +98,7 @@ class OnStepIndiClient:
         clock: Callable[[], datetime] | None = None,
         auto_supervise: bool = True,
         guide_calibration: IndiGuideCalibration | None = None,
+        trace: TraceRecorder | str | Path | None = None,
     ) -> None:
         self.device = config.device if config is not None else device
         self.safe_meridian_flip_via_home = (
@@ -84,10 +106,17 @@ class OnStepIndiClient:
             else safe_meridian_flip_via_home
         )
         self._config = config
+        if trace is None and config is not None and config.trace_path:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            trace = config.trace_path.replace("{utc}", stamp)
+        self._owns_trace = trace is not None and not isinstance(trace, TraceRecorder)
+        self.trace = as_recorder(trace, source="real")
         self._transport = transport or IndiTransport(
             host=config.host if config is not None else host,
             port=config.port if config is not None else port,
         )
+        if self.trace is not None:
+            self._transport.trace = self.trace
         self._clock = clock or (lambda: datetime.now().astimezone())
         self._auto_supervise = auto_supervise
         self._guide_calibration = guide_calibration
@@ -104,6 +133,8 @@ class OnStepIndiClient:
         self._mode_controller = IndiModeController(
             config.mode_state_path if config is not None else None
         )
+        self._motion: MotionHandle | None = None
+        self._motion_lock = threading.Lock()
         self.mount = IndiMount(self)
         self.focuser = IndiFocuser(self._transport, config) if config is not None else None
 
@@ -145,6 +176,7 @@ class OnStepIndiClient:
             self._session_time_site_accepted = False
         return self._session_time_site_accepted
 
+    @_traced
     def connect(self, *, timeout: float = 5.0) -> IndiStartupStatus:
         if self._transport.is_open and self._policy is not None:
             raise RuntimeError("INDI client is already connected; close before reconnecting")
@@ -255,17 +287,148 @@ class OnStepIndiClient:
             raise RuntimeError("Connect with an INDI runtime configuration first")
         return self._status_reader.read()
 
+    @property
+    def active_motion(self) -> MotionHandle | None:
+        """The move that is still running, if any."""
+        motion = self._motion
+        return motion if motion is not None and not motion.done else None
+
+    def _start_motion(self, kind: str, run) -> MotionHandle:
+        """Start ``run(token)`` in a worker and return its handle at once."""
+        with self._motion_lock:
+            if self.active_motion is not None:
+                raise RuntimeError(
+                    f"Another mount move ({self._motion.kind}) is active; "
+                    "stop it or wait for it first"
+                )
+            handle = MotionHandle(
+                kind, run, stop=self.emergency_stop, on_finish=self._motion_finished
+            )
+            self._motion = handle
+            if self.trace is not None:
+                self.trace.record("motion_start", kind=kind)
+            return handle._start()
+
+    def _motion_finished(self, handle: MotionHandle) -> None:
+        if self.trace is None:
+            return
+        progress = handle.progress()
+        self.trace.record(
+            "motion_end", kind=handle.kind, state=progress.state,
+            duration_s=progress.elapsed_s, error=progress.error,
+            result=handle._result,
+        )
+
+    def _require_no_motion(self) -> None:
+        if self.active_motion is not None:
+            raise RuntimeError(
+                f"A mount move ({self._motion.kind}) is active; stop it or wait for it first"
+            )
+
     def move_axis_deg(
         self, axis: str, offset_deg: float, *, timeout_s: float = 30.0,
         poll_s: float = 0.1,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
-    ) -> IndiAxisMoveResult:
+    ) -> MotionHandle:
+        """Start a finite axis move and return its handle at once.
+
+        ``handle.wait()`` returns an ``IndiAxisMoveResult`` or raises the
+        error the move ended with.
+        """
         if self._axis_mover is None or not self._transport.is_open:
             raise ConnectionError("INDI client is not connected")
         self._require_astronomical_if_managed()
-        return self._axis_mover.move(
+        self._axis_mover.validate_request(
             axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s, mode=mode
         )
+        mover = self._axis_mover
+        mover.require_ra_defined(axis)
+
+        def run(token: MotionToken) -> IndiAxisMoveResult:
+            return mover.move(
+                axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s, mode=mode,
+                token=token,
+            )
+
+        return self._start_motion(f"{axis}_axis", run)
+
+    def jog(
+        self, axis: str, direction: int, *, rate_index: int | None = None,
+        lease_s: float = DEFAULT_JOG_LEASE_S,
+        max_duration_s: float = DEFAULT_JOG_DURATION_S, poll_s: float = 0.1,
+    ) -> JogHandle:
+        """Start a hold-to-move jog and return its handle at once.
+
+        The axis keeps moving while the caller calls ``handle.renew()`` at
+        least every ``lease_s`` seconds, and stops on ``handle.release()``,
+        a missed renewal, ``max_duration_s`` or a DEC/altitude bound.
+        ``rate_index`` picks an entry of the controller's
+        ``TELESCOPE_SLEW_RATE`` list (None keeps the current rate).
+        """
+        if self._axis_mover is None or not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        validate_jog_request(
+            axis, direction, rate_index=rate_index, lease_s=lease_s,
+            max_duration_s=max_duration_s, poll_s=poll_s,
+        )
+        self._axis_mover.require_ra_defined(axis)
+        jogger = IndiAxisJogger(
+            self._transport, self.device, self._axis_mover, self.observe_mount
+        )
+        lease = JogLease(lease_s)
+
+        def run(token: MotionToken) -> IndiJogResult:
+            return jogger.run(
+                axis, direction, lease, rate_index=rate_index,
+                max_duration_s=max_duration_s, poll_s=poll_s, token=token,
+            )
+
+        return JogHandle(self._start_motion(f"{axis}_jog", run), lease)
+
+    @_traced
+    def reconnect_device(self, *, timeout: float = 20.0, poll_s: float = 0.25) -> IndiReconnectResult:
+        """Reopen the OnStep INDI device's link to the controller: DISCONNECT, then CONNECT
+        (what Ekos' Disconnect/Connect does), then wait for fresh OnStep status.
+
+        For a driver that lost its serial port while indiserver kept running (field incident
+        908a26b9: a USB over-current reset re-enumerated the adapter; the driver kept polling
+        the dead handle, OnStep Status stopped and the position sat in "Alert"). Never moves
+        the mount; refused while a move or jog is active. ``recovered`` is True only when a
+        fresh OnStep Status arrived after the CONNECT.
+        """
+        if not self._transport.is_open:
+            raise ConnectionError("INDI client is not connected")
+        self._require_no_motion()
+        started = time.monotonic()
+        before = self._transport.get_property(self.device, "OnStep Status")
+        status_revision = before.revision if before is not None else -1
+        self._transport.issue_switch(self.device, "CONNECTION", "DISCONNECT", timeout=timeout)
+        deadline = started + timeout
+        while True:  # wait until the driver reports it let go of the port
+            connection = self._transport.get_property(self.device, "CONNECTION")
+            if connection is not None and connection.values.get("DISCONNECT") == "On":
+                break
+            if time.monotonic() >= deadline:
+                return IndiReconnectResult(
+                    False, time.monotonic() - started, "the driver did not disconnect"
+                )
+            time.sleep(poll_s)
+        self._transport.issue_switch(self.device, "CONNECTION", "CONNECT", timeout=timeout)
+        while True:  # fresh OnStep Status proves the controller answers again
+            connection = self._transport.get_property(self.device, "CONNECTION")
+            status = self._transport.get_property(self.device, "OnStep Status")
+            if (
+                connection is not None and connection.values.get("CONNECT") == "On"
+                and status is not None and status.revision > status_revision
+                and status.state.lower() != "alert"
+            ):
+                return IndiReconnectResult(True, time.monotonic() - started, None)
+            if time.monotonic() >= deadline:
+                return IndiReconnectResult(
+                    False, time.monotonic() - started,
+                    "no fresh OnStep status after reconnecting the driver",
+                )
+            time.sleep(poll_s)
 
     def meridian_status(self) -> IndiMeridianState:
         if self._policy is None:
@@ -314,12 +477,22 @@ class OnStepIndiClient:
         self._supervisor.start()
 
     def emergency_stop(self, *, timeout: float = 5.0) -> IndiStopResult:
-        """Request abort and tracking off without requiring time/site authority."""
+        """Request abort and tracking off without requiring time/site authority.
+
+        Also ends the running move, if any, so its handle reports ``stopped``.
+        Safe to call from any thread at any time.
+        """
+        motion = self.active_motion
+        if motion is not None:
+            motion._request_stop()
         if not self._transport.is_open:
             raise ConnectionError("INDI client is not connected")
-        return stop_mount_via_indi(
+        result = stop_mount_via_indi(
             self._transport, self.device, confirmation_timeout=timeout
         )
+        if motion is not None:
+            motion._record_stop(result)
+        return result
 
     def enable_tracking(self, *, timeout: float = 8.0) -> IndiTrackingResult:
         if not self._transport.is_open or self._status_reader is None:
@@ -337,9 +510,11 @@ class OnStepIndiClient:
     ) -> IndiHomeRouteResult:
         """Route mechanically; no normal motion is unlocked by this prototype."""
         self._require_home_motion()
+        self._require_no_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
         self._refuse_while_terrestrial_motion_active()
+        self._mark_ra_undefined()
         return self._home_router.park_to_home(
             unpark_timeout=unpark_timeout, home_timeout=home_timeout
         )
@@ -347,6 +522,7 @@ class OnStepIndiClient:
     def unpark(self, *, timeout: float = 20.0) -> IndiUnparkResult:
         """Leave PARKED without requesting a HOME slew."""
         self._require_park_motion()
+        self._require_no_motion()
         if self._home_router is None or not self._transport.is_open:
             raise ConnectionError("Connect with an INDI runtime configuration first")
         self._refuse_while_terrestrial_motion_active()
@@ -358,47 +534,6 @@ class OnStepIndiClient:
                 raise RuntimeError("Terrestrial UNPARK did not preserve TRACK_OFF")
             if self._terrestrial_controller is not None:
                 self._terrestrial_controller.authorize_stationary_start(snapshot)
-        return result
-
-    def go_home(self, *, timeout: float = 120.0) -> IndiPositionResult:
-        """Explicitly move to OnStep HOME and verify live arrival."""
-        self._require_home_motion()
-        if self._home_router is None or not self._transport.is_open:
-            raise ConnectionError("Connect with an INDI runtime configuration first")
-        self._refuse_while_terrestrial_motion_active()
-        return self._home_router.go_home(timeout=timeout)
-
-    def park(
-        self, *, timeout: float = 120.0,
-        operator_confirmed_existing_park: bool = False,
-    ) -> IndiPositionResult:
-        """Explicitly move directly to OnStep's stored PARK position."""
-        self._require_park_motion()
-        if self._home_router is None or not self._transport.is_open:
-            raise ConnectionError("Connect with an INDI runtime configuration first")
-        self._refuse_while_terrestrial_motion_active()
-        self._mode_controller.clear_authorization()
-        result = self._home_router.park(
-            timeout=timeout,
-            operator_confirmed_existing_park=operator_confirmed_existing_park,
-        )
-        if (
-            result.confirmed and result.park_evidence_consistent and
-            self._config is not None and self._config.mode_state_path is not None
-        ):
-            if operator_confirmed_existing_park:
-                result_revision = self._status_reader.trust_current_park_status()
-                result = IndiPositionResult(
-                    result.destination, result.confirmed, result.final_raw_status,
-                    result.error, result.stop_result,
-                    status_revision=result_revision,
-                    park_evidence_consistent=result.park_evidence_consistent,
-                )
-            if self._terrestrial_controller is not None:
-                self._terrestrial_controller.capture_park_reference(self.observe_mount())
-            self._mode_controller.authorize_after_park(
-                status_revision=result.status_revision
-            )
         return result
 
     def mode_status(self) -> IndiModeStatus:
@@ -499,6 +634,80 @@ class OnStepIndiClient:
         if self._terrestrial_controller is not None and self._terrestrial_controller.busy:
             raise RuntimeError("Terrestrial motion is active or stopping")
 
+    def go_home(self, *, timeout: float = 120.0) -> MotionHandle:
+        """Start the move to OnStep HOME and return its handle at once.
+
+        ``handle.wait()`` returns an ``IndiPositionResult`` once live arrival
+        is verified (or the move failed); ``handle.stop()`` ends it.
+        """
+        self._require_home_motion()
+        if self._home_router is None or not self._transport.is_open:
+            raise ConnectionError("Connect with an INDI runtime configuration first")
+        self._refuse_while_terrestrial_motion_active()
+        router = self._home_router
+        handle = self._start_motion(
+            "home", lambda token: router.go_home(timeout=timeout, token=token)
+        )
+        self._mark_ra_undefined()
+        return handle
+
+    def park(
+        self, *, timeout: float = 120.0,
+        operator_confirmed_existing_park: bool = False,
+    ) -> MotionHandle:
+        """Start the move to OnStep's stored PARK and return its handle at once."""
+        self._require_park_motion()
+        if self._home_router is None or not self._transport.is_open:
+            raise ConnectionError("Connect with an INDI runtime configuration first")
+        self._refuse_while_terrestrial_motion_active()
+        self._mode_controller.clear_authorization()
+        router = self._home_router
+
+        def run(token: MotionToken) -> IndiPositionResult:
+            result = router.park(
+                timeout=timeout,
+                operator_confirmed_existing_park=operator_confirmed_existing_park,
+                token=token,
+            )
+            if (
+                result.confirmed and result.park_evidence_consistent and
+                self._config is not None and self._config.mode_state_path is not None
+            ):
+                if operator_confirmed_existing_park:
+                    assert self._status_reader is not None
+                    result_revision = self._status_reader.trust_current_park_status()
+                    result = IndiPositionResult(
+                        result.destination, result.confirmed, result.final_raw_status,
+                        result.error, result.stop_result,
+                        status_revision=result_revision,
+                        park_evidence_consistent=result.park_evidence_consistent,
+                    )
+                if self._terrestrial_controller is not None:
+                    self._terrestrial_controller.capture_park_reference(
+                        self.observe_mount()
+                    )
+                self._mode_controller.authorize_after_park(
+                    status_revision=result.status_revision
+                )
+            return result
+
+        return self._start_motion(
+            "park", run
+        )
+
+    @property
+    def ra_axis_defined(self) -> bool:
+        """False after connecting and after HOME until a DEC axis move completed.
+
+        RA-axis moves are refused while this is False; move DEC first.
+        """
+        mover = self._axis_mover
+        return mover is not None and mover.ra_axis_defined
+
+    def _mark_ra_undefined(self) -> None:
+        if self._axis_mover is not None:
+            self._axis_mover.mark_ra_undefined()
+
     def _require_home_motion(self) -> None:
         if self._config is None or not self._config.home_motion_enabled:
             raise RuntimeError(
@@ -511,6 +720,7 @@ class OnStepIndiClient:
                 "INDI PARK/UNPARK motion is disabled in this installation"
             )
 
+    @_traced
     def sync_time_location(
         self, *, user_approved: bool, timeout: float = 5.0
     ) -> IndiSyncResult:
@@ -576,6 +786,13 @@ class OnStepIndiClient:
         )
 
     def close(self) -> None:
+        motion = self.active_motion
+        if motion is not None and self._transport.is_open:
+            # Never leave a move running without its supervisor and transport.
+            try:
+                self.emergency_stop()
+            except (ConnectionError, RuntimeError, TimeoutError, ValueError):
+                pass
         try:
             if self._supervisor is not None:
                 self._supervisor.close()
@@ -592,10 +809,16 @@ class OnStepIndiClient:
             self._home_router = None
             self._mode_controller.clear_authorization()
             self._transport.close()
+            if motion is not None:
+                motion._thread.join(timeout=1.0)
 
     def __enter__(self) -> OnStepIndiClient:
         self.connect()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
+        try:
+            self.close()
+        finally:
+            if self._owns_trace and self.trace is not None:
+                self.trace.close()

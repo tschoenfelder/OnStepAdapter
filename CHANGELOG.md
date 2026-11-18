@@ -85,6 +85,159 @@
   early STOP and stable-settle verification.
 - Blocked terrestrial tracking/guiding and blocked PARK/HOME/mode changes while
   terrestrial motion is active or stopping.
+## 0.6.14 and current-main integration
+
+- 0.6.14: `mount.reconnect_device()` / `client.reconnect_device()` reopen the
+  INDI driver's link to the controller -- `CONNECTION` DISCONNECT, then CONNECT,
+  as Ekos' Disconnect/Connect does -- and wait for a fresh `OnStep Status`;
+  returns `IndiReconnectResult(recovered, elapsed_s, error)`. For a driver that
+  lost its serial port while indiserver kept running (field incident 908a26b9:
+  a USB over-current reset re-enumerated the adapter; no OnStep Status, the
+  position stuck in "Alert", unpark refused). Never moves the mount; refused
+  while a move or jog is active. The mock gains `lose_serial()` for this case.
+
+- 0.6.13: **finite axis moves no longer use a goto.** `move_dec_axis_deg()` /
+  `move_ra_axis_deg()` drive only the requested axis with OnStep's single-axis
+  motion (`TELESCOPE_MOTION_NS` / `TELESCOPE_MOTION_WE`) at a `TELESCOPE_SLEW_RATE`
+  entry (index 3-7, 2x-48x sidereal), for the time the angle needs, then measure
+  the result from fresh readings after a confirmed stop and close the gap in up
+  to 4 passes (a pass that overshot is followed by one in the opposite direction
+  of the same axis). The other axis gets no command at all: a goto to "current RA,
+  new DEC" still turned the RA motor, because OnStep takes RA only to the whole
+  second (real capture: 12-20 arcsec of HA per DEC move, 0.6.12 reduced but could
+  not remove it). Rates are learned per axis and rate across moves; a first pass at
+  an unmeasured rate aims for 60% of the angle. Landing tolerance: DEC
+  max(10", 3%), RA max(20", 3%) (RA reads only to 1 s of time).
+  `IndiAxisMoveResult.measured_deg` is now the measured angle. The positive
+  directions are OnStep's MOTION_NORTH / MOTION_WEST jogs (as in 0.6.11); the sky
+  sign of a pass is measured, not assumed. Moves are slower than a goto (48x =
+  12 arcmin/s; ~5 s per degree plus about 4 s per pass to confirm the stop).
+  `IndiAxisMover(single_axis=False)` keeps the former goto for comparison.
+  The mock now models NORTH as a mechanical direction (it lowers DEC at pier side
+  east and when leaving the pole).
+
+- 0.6.12: a finite axis move (`move_dec_axis_deg` / `move_ra_axis_deg`) now
+  holds the mechanical hour angle of the axis it does not move. With tracking
+  off the published RA grows at the sidereal rate, and the goto target used
+  the last RA reading unchanged, so every DEC move also drove the RA axis back
+  by that reading's age (real capture: 0.4-1.5 s, 12-20 arcsec of HA per DEC
+  move). The target RA is now advanced by the sidereal drift since the
+  reading (its `coordinates_age_ms` plus the time to the send). What remains
+  is OnStep's own 1 s RA resolution.
+- 0.6.12: TRACK_OFF is sent as soon as the slew is seen, not only after
+  arrival: OnStep can start sidereal tracking by itself at the end of a goto
+  (seen on the first goto after unpark). The post-arrival TRACK_OFF and its
+  two-sample confirmation are unchanged.
+
+- Merge the 0.6.7 to 0.6.11 releases (tagged on a side branch) into `main`:
+  finite axis moves may be up to 15 degrees; HA missing from INDI is derived
+  from the UTC clock and the configured longitude; finite-move targets and
+  arrival use the sky separation from the target RA/DEC; continuous Axis 2
+  through the north pole and transient INDI pier display conflicts are
+  handled.
+- **Breaking:** a positive DEC-axis angle now follows OnStep's mechanical
+  jog direction, which lowers the published sky DEC (`move_dec_axis_deg(+x)`
+  targets DEC - x). The DEC-first move from HOME (DEC +90) toward the bound
+  is therefore a positive DEC move.
+- Add hold-to-move jogs: `mount.jog_ra(direction)` / `mount.jog_dec(direction)`
+  (and `client.jog()`) start OnStep manual motion and return a `JogHandle`
+  at once. The axis moves while the caller calls `renew()` at least every
+  `lease_s` (0.2-2 s, default 0.5 s) and stops on `release()`, a missed
+  renewal, `max_duration_s` (default 60 s, at most 120 s) or the
+  `[movement]` DEC/altitude bound. Every ending switches the motion off,
+  turns tracking off and confirms two fresh stationary readings; a failure
+  after motion started sends the emergency stop. `rate_index` picks an entry
+  of the controller's `TELESCOPE_SLEW_RATE` list. RA jogs follow the
+  DEC-first rule, and a DEC jog that moved DEC defines RA. The lease is
+  watched in this process: if the whole process dies mid-jog, OnStep keeps
+  moving until something else stops it.
+- **Breaking:** the first axis move after connecting, after `go_home()` or
+  `route_park_to_home()`, and whenever a fresh reading reports HOME must be
+  DEC. At HOME the mount points at the pole, where RA has a value but no
+  meaning, so `move_ra_axis_deg()` and `move_ra()` raise
+  `RaAxisUndefinedError` (a `RuntimeError`) before anything is sent until a
+  DEC move has completed and been verified. `mount.ra_axis_defined` reports
+  the state.
+- A DEC move that starts outside the `[movement]` DEC bound (HOME is
+  DEC +90) may now run when it only brings DEC closer to the bound, so the
+  DEC-first move from HOME no longer needs a full 10 degree step.
+- Ship `onstep_mock`, `onstep_adapter.capture` and the `indi_capture`,
+  `trace_compare` and `trace_consolidate` tools in the wheel, so applications
+  can run against the mock or record traffic from an installed release. The
+  wheel built from `main` also lacked `indi_motion` and `indi_trace` and
+  failed on `import onstep_adapter`; a release contract test now checks that
+  every module a shipped module imports is shipped too.
+- Add `onstep_adapter.capture` and `python3 -m onstep_adapter.tools.indi_capture`
+  to record the traffic between an INDI client, indiserver and OnStepX
+  passively: from a `tcpdump` recording, or through a transparent TCP
+  pass-through that forwards bytes unchanged and never sends anything itself.
+  Captures use the trace format and are checked against sixteen documented
+  assumptions (A01-A16). SET HOME, SET PARK and SYNC writes and the matching
+  LX200 commands are flagged.
+- Add `python3 -m onstep_mock.validate` to replay a capture against the mock
+  and report where the mock differs from the recorded mount, with measured
+  `SimConfig` values. Recordings in `tests/acceptance/recordings/` are
+  acceptance tests. See `docs/CAPTURE.md`.
+- Store logs by day: a capture or trace path containing `{date}` writes one
+  file per UTC day that each session appends to; a session crossing midnight
+  continues in the next file under the same `session_id`. Every session
+  record now carries a `session_id`. `trace_compare`, `indi_capture` and
+  `onstep_mock.validate` accept several files and handle each session.
+- Add `python3 -m onstep_adapter.tools.trace_consolidate`, which writes a
+  condensed copy of a log where each run of repeated entries is one entry
+  with `repeat`, `t_end` and `duration_s` (`--text` for a readable listing).
+
+- **Breaking:** `park()`, `go_home()`, `move_ra_axis_deg()`,
+  `move_dec_axis_deg()`, `move_ra()` and `move_dec()` no longer block. They
+  return a `MotionHandle` at once with `progress()`, `wait()` and `stop()`;
+  `wait()` returns the result the call used to return. `mount.stop()` and the
+  meridian supervisor end a running handle's move, only one move runs at a
+  time, and `close()` stops a move still running. Callers that want the old
+  behavior use `mount.go_home().wait()`.
+
+- Add an optional transaction trace (JSON Lines) of every INDI write, every
+  received property update with decoded `:GU#` status, and every public mount
+  call with its result or error. Enable it with `[trace] path` in the runtime
+  configuration or `OnStepClient(trace=...)`. Tracing is off by default and
+  can never interrupt a command.
+- Add `python3 -m onstep_adapter.tools.trace_compare` to summarize a trace or
+  compare an observed run with an expected one, operation by operation.
+- Add `onstep_mock`, a virtual OnStepX mount behind a local INDI server, for
+  testing applications against the unchanged adapter. Slews take real time
+  (with a speed factor), STOP works at any moment, UNPARK auto-tracks like
+  OnStepX, HOME and PARK are fixed, and SET HOME, SET PARK and SYNC are
+  rejected and logged. Tests inspect `server.mount` and `server.writes`.
+
+## 0.6.6 - 2026-10-20
+
+- Track terrestrial DEC jogs through the north celestial pole with a continuous
+  Axis-2 coordinate derived from DEC and OnStep's authoritative pier side.
+- Shift RA by 12 hours exactly once when the coordinate representation changes.
+- Continue subsequent west-side Axis-2 jogs without repeating that RA shift.
+
+## 0.6.5 - 2026-10-20
+
+- Tolerate only the transient secondary INDI pier-side conflict produced by a
+  terrestrial DEC coordinate fold.
+- Continue to require the authoritative OnStep `:GU#` pier side to remain
+  unchanged throughout the move and require both sources to agree at rest.
+
+## 0.6.4 - 2026-10-20
+
+- Treat terrestrial DEC jogs as continuous mechanical Axis-2 motion.
+- Fold targets through the celestial poles into legal RA/DEC coordinates.
+- Apply the altitude floor, rather than astronomical DEC bounds, to terrestrial jogs.
+
+## 0.6.3 - 2026-10-20
+
+- Raised the maximum finite RA/DEC axis jog from 10 to 15 degrees.
+- Kept projected altitude and configured DEC target bounds mandatory for the
+  larger request.
+- Added regression coverage for the inclusive 15-degree boundary and rejection
+  above it.
+- Preserve a freshly received property acknowledgement when the INDI peer closes
+  immediately after sending it, while still failing promptly if no newer
+  property was received.
 
 ## 0.6.2 - 2026-10-20
 

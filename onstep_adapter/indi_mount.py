@@ -6,25 +6,35 @@ from typing import TYPE_CHECKING
 
 from .indi_axis_motion import AxisMotionMode
 from .indi_guiding import IndiGuideCalibration
+from .indi_trace import traced_operation
 
 if TYPE_CHECKING:
     from .indi_client import OnStepIndiClient
+
+
+_traced = traced_operation(lambda mount: getattr(mount._client, "trace", None))
 
 
 class IndiMount:
     def __init__(self, client: OnStepIndiClient) -> None:
         self._client = client
 
+    @_traced
     def get_status(self):
         return self._client.observe_mount()
 
+    @_traced
     def unpark(self):
         return self._client.unpark()
 
+    @_traced
     def go_home(self):
+        """Start the move to HOME; returns a ``MotionHandle`` at once."""
         return self._client.go_home()
 
+    @_traced
     def park(self, *, operator_confirmed_existing_park: bool = False):
+        """Start the move to the stored PARK; returns a ``MotionHandle`` at once."""
         return self._client.park(
             operator_confirmed_existing_park=operator_confirmed_existing_park
         )
@@ -80,9 +90,18 @@ class IndiMount:
             "dec", offset_deg, timeout_s=timeout_s,
         )
 
+    @_traced
+    def reconnect_device(self, *, timeout: float = 20.0):
+        """Reopen the INDI driver's link to the controller (DISCONNECT, CONNECT) and wait for
+        fresh OnStep status; never moves the mount. Returns an ``IndiReconnectResult``."""
+        return self._client.reconnect_device(timeout=timeout)
+
+    @_traced
     def stop(self):
+        """Stop all motion now, including a running handle's move."""
         return self._client.emergency_stop()
 
+    @_traced
     def guide_pulse(
         self, direction: str, duration_ms: int, *, command_timeout: float = 3.0
     ):
@@ -91,10 +110,12 @@ class IndiMount:
             direction, duration_ms, command_timeout=command_timeout
         )
 
+    @_traced
     def guide(self, direction: str, duration_ms: int) -> bool:
         """Compatibility wrapper returning whether a guide pulse completed."""
         return self.guide_pulse(direction, duration_ms).pulse_completed
 
+    @_traced
     def guide_correction_ra(
         self,
         offset_arcsec: float,
@@ -112,6 +133,7 @@ class IndiMount:
             command_timeout=command_timeout,
         )
 
+    @_traced
     def guide_correction_dec(
         self,
         offset_arcsec: float,
@@ -134,27 +156,60 @@ class IndiMount:
     def set_guide_calibration(self, calibration: IndiGuideCalibration | None) -> None:
         self._client.set_guide_calibration(calibration)
 
+    @_traced
     def meridian_status(self):
         return self._client.meridian_status()
 
+    @property
+    def ra_axis_defined(self) -> bool:
+        """False after connecting and at HOME until DEC has moved; RA moves are
+        refused until then (move DEC first)."""
+        return self._client.ra_axis_defined
+
+    @_traced
     def move_ra_axis_deg(
         self, offset_deg: float, *, timeout_s: float = 30.0,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
     ):
-        """Finite same-pier RA-axis target; positive increases hour angle."""
+        """Finite same-pier RA-axis target; positive increases hour angle.
+
+        Refused with ``RaAxisUndefinedError`` after connecting and at HOME until
+        a DEC axis move has completed (see ``ra_axis_defined``).
+
+        Returns a ``MotionHandle`` at once; ``wait()`` gives the
+        ``IndiAxisMoveResult``.
+        """
         return self._client.move_axis_deg(
             "ra", offset_deg, timeout_s=timeout_s, mode=mode
         )
 
+    @_traced
     def move_dec_axis_deg(
         self, offset_deg: float, *, timeout_s: float = 30.0,
         mode: AxisMotionMode | str = AxisMotionMode.TERRESTRIAL,
     ):
-        """Finite same-pier DEC-axis target; positive is northward."""
+        """Finite same-pier DEC-axis target; positive is northward.
+
+        Returns a ``MotionHandle`` at once; ``wait()`` gives the
+        ``IndiAxisMoveResult``.
+        """
         return self._client.move_axis_deg(
             "dec", offset_deg, timeout_s=timeout_s, mode=mode
         )
 
+    @_traced
+    def jog_ra(self, direction: int, **options):
+        """Hold-to-move RA: +1 west (increasing HA), -1 east. Returns a
+        ``JogHandle`` at once; ``renew()`` it while held, ``release()`` on
+        release. Refused until DEC has moved (see ``ra_axis_defined``)."""
+        return self._client.jog("ra", direction, **options)
+
+    @_traced
+    def jog_dec(self, direction: int, **options):
+        """Hold-to-move DEC: +1 north, -1 south. Returns a ``JogHandle``."""
+        return self._client.jog("dec", direction, **options)
+
+    @_traced
     def move_ra(
         self, offset_arcsec: float, *, mode: str = "manual", timeout_s: float = 30.0
     ):
@@ -163,6 +218,7 @@ class IndiMount:
             raise ValueError("INDI 0.4 axis-angle movement supports mode='manual' only")
         return self.move_ra_axis_deg(offset_arcsec / 3600.0, timeout_s=timeout_s)
 
+    @_traced
     def move_dec(
         self, offset_arcsec: float, *, mode: str = "manual", timeout_s: float = 30.0
     ):
@@ -171,10 +227,12 @@ class IndiMount:
             raise ValueError("INDI 0.4 axis-angle movement supports mode='manual' only")
         return self.move_dec_axis_deg(offset_arcsec / 3600.0, timeout_s=timeout_s)
 
+    @_traced
     def goto(self, ra_hours: float, dec_deg: float):
         raise NotImplementedError(
             "INDI goto is unavailable until the 0.4 safety and HOME gates are validated"
         )
 
+    @_traced
     def enable_tracking(self):
         return self._client.enable_tracking()

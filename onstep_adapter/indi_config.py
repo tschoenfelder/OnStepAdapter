@@ -37,6 +37,7 @@ class IndiRuntimeConfig:
     terrestrial_slew_rate_element: str = "9"
     terrestrial_ra_recovery_max_seconds: float = 2.0
     terrestrial_stall_timeout_seconds: float = 3.0
+    trace_path: str | None = None
 
 
 def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
@@ -96,6 +97,10 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
             ),
             terrestrial_stall_timeout_seconds=float(
                 terrestrial.get("stall_timeout_seconds", 3.0)
+            ),
+            trace_path=(
+                str(data["trace"]["path"])
+                if "trace" in data and data["trace"].get("path") else None
             ),
         )
     except (AttributeError, KeyError, TypeError, ValueError) as exc:

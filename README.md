@@ -169,7 +169,10 @@ after each leg. It did not certify the entire physical focuser travel.
 `unpark()` leaves PARKED without a HOME slew. `park()` moves directly to the
 stored PARK position and does not require or silently route through HOME. A
 repeated `park()` is idempotent when fresh raw OnStep status already proves
-the requested state. These mechanical operations remain disabled by
+the requested state. `park()`, `go_home()` and the axis moves return a
+`MotionHandle` at once (`progress()`, `wait()`, `stop()`), so the calling
+thread can always stop the move; see `docs/SDK.md`. These mechanical
+operations remain disabled by
 the example configuration until their supervised acceptance is complete.
 General `goto()` remains unavailable.
 
@@ -200,7 +203,7 @@ from onstep_adapter import IndiOperatingMode, OnStepClient, load_indi_config
 
 config = load_indi_config("~/.config/onstep_adapter/config.toml")
 with OnStepClient(config=config) as client:
-    parked = client.mount.park()       # explicit, even if already PARKED
+    parked = client.mount.park().wait()  # explicit, even if already PARKED
     if not parked.confirmed:
         raise RuntimeError(parked.error)
     changed = client.mount.set_mode(IndiOperatingMode.TERRESTRIAL)
@@ -271,11 +274,12 @@ enforced. A newly connected client never stops or reissues an existing track
 merely because its own authority is absent. Finite
 `move_ra_axis_deg()` / `move_dec_axis_deg()` take degrees. The compatibility
 `move_ra(..., mode="manual")` / `move_dec(..., mode="manual")` methods take
-arcseconds. Both use finite INDI targets.
+arcseconds. Both drive only the requested OnStep axis with a bounded INDI
+manual-motion sequence, then verify STOP and measured arrival.
 They are available only in astronomical operating mode, support 30 arcseconds
-through 10 degrees, and require fresh unparked,
+through 15 degrees, and require fresh unparked,
 stationary, non-tracking and fault-free state,
-but neither HOME nor clock authority. Their 1/5/10-degree mock cases pass;
+but neither HOME nor clock authority. Their 1/5/10/15-degree mock cases pass;
 the supervised mount test has **not** passed. Requests below 30″ are refused,
 never rounded. PARK-record and application-controlled flip commands from
 0.3.5 have not been ported; no serial fallback is provided.
@@ -315,6 +319,7 @@ tests paired +1/-1, +5/-5 and +10/-10 degree movements on both axes before
 
 See the [behavioral specification](docs/ONSTEP_ADAPTER_SPECIFICATION.md),
 [SDK guide](docs/SDK.md), [requirements](docs/REQUIREMENTS.md),
+[OnStepX mock](docs/MOCK.md),
 [INDI architecture](docs/INDI_ARCHITECTURE.md), and
 [hardware inventory](docs/INDI_RASPBERRY_INVENTORY.md). The previous
 [0.3.5 release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.5)

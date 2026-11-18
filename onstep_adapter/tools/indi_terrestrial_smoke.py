@@ -44,7 +44,9 @@ def _run(client, jog_seconds: float) -> int:
     if not _confirm("Press ENTER to request/confirm PARK; type ESC then ENTER to abort> "):
         client.mount.stop()
         return 2
-    parked = client.mount.park(operator_confirmed_existing_park=initial.parked)
+    parked = client.mount.park(
+        operator_confirmed_existing_park=initial.parked
+    ).wait()
     print(f"PARK result: {parked}")
     if not parked.confirmed:
         return 1
@@ -74,7 +76,7 @@ def _run(client, jog_seconds: float) -> int:
         elif command == "s":
             print(client.mount.move_terrestrial_dec_timed("south", jog_seconds))
         elif command == "p":
-            print(client.mount.park())
+            print(client.mount.park().wait())
         elif command == "a":
             print(client.mount.set_mode(IndiOperatingMode.ASTRONOMICAL))
             return 0

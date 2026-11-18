@@ -58,3 +58,12 @@ stall_timeout_seconds = 3.0
 # INDI currently reports FOCUS_MAX=100000. Keep this lower conservative
 # software ceiling until the physical focuser travel is verified.
 max_position = 50000
+
+[trace]
+# Optional transaction trace (JSON Lines) of every INDI write, every received
+# property update and every public mount call. {date} becomes the UTC day, so
+# every session of a day goes into one file (a session running past midnight
+# continues in the next day's file); {utc} becomes the start time instead.
+# Compare two traces with: python3 -m onstep_adapter.tools.trace_compare
+# Condense a log with:     python3 -m onstep_adapter.tools.trace_consolidate
+# path = "~/.local/state/onstep_adapter/trace-{date}.jsonl"

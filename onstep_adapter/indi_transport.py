@@ -11,6 +11,8 @@ import time
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape, quoteattr
 
+from .indi_trace import TraceRecorder
+
 
 @dataclass(frozen=True)
 class IndiProperty:
@@ -27,9 +29,16 @@ class IndiProperty:
 class IndiTransport:
     """Subscribe to properties and send bounded INDI requests on one socket."""
 
-    def __init__(self, *, host: str = "127.0.0.1", port: int = 7624) -> None:
+    def __init__(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 7624,
+        trace: TraceRecorder | None = None,
+    ) -> None:
         self.host = host
         self.port = port
+        self.trace = trace
         self._socket: socket.socket | None = None
         self._reader: threading.Thread | None = None
         self._condition = threading.Condition()
@@ -64,6 +73,8 @@ class IndiTransport:
             self._properties.clear()
             self._reader = threading.Thread(target=self._read_loop, name="onstep-indi-reader", daemon=True)
             self._reader.start()
+        if self.trace is not None:
+            self.trace.record("connect", host=self.host, port=self.port)
         self._send('<getProperties version="1.7"/>')
 
     def close(self) -> None:
@@ -75,6 +86,8 @@ class IndiTransport:
             reader = self._reader
             self._socket = None
             self._condition.notify_all()
+        if self.trace is not None:
+            self.trace.record("close", host=self.host, port=self.port)
         if connection is not None:
             connection.close()
         if reader is not None and reader is not threading.current_thread():
@@ -98,12 +111,12 @@ class IndiTransport:
         deadline = time.monotonic() + timeout
         with self._condition:
             while True:
-                failure = self._reader_failure_locked()
-                if failure is not None:
-                    raise ConnectionError("INDI reader failed") from failure
                 prop = self._properties.get((device, name))
                 if prop is not None and prop.revision > after_revision:
                     return prop
+                failure = self._reader_failure_locked()
+                if failure is not None:
+                    raise ConnectionError("INDI reader failed") from failure
                 if self._closed:
                     raise ConnectionError("INDI connection closed")
                 remaining = deadline - time.monotonic()
@@ -203,6 +216,19 @@ class IndiTransport:
         self._send(
             f"<newSwitchVector device={quoteattr(device)} name={quoteattr(name)}>"
             f"{body}</newSwitchVector>"
+        )
+        return before.revision
+
+    def issue_switch_off(
+        self, device: str, name: str, element: str, *, timeout: float = 3.0
+    ) -> int:
+        """Switch one element Off (ends a manual motion); caller verifies status."""
+        before = self.wait_property(device, name, timeout=timeout)
+        if before.kind != "Switch" or before.permission == "ro" or element not in before.values:
+            raise ValueError(f"{device}.{name}.{element} is not a writable INDI switch")
+        self._send(
+            f"<newSwitchVector device={quoteattr(device)} name={quoteattr(name)}>"
+            f"<oneSwitch name={quoteattr(element)}>Off</oneSwitch></newSwitchVector>"
         )
         return before.revision
 
@@ -328,7 +354,15 @@ class IndiTransport:
                 failure = self._reader_failure_locked()
                 if failure is not None:
                     raise ConnectionError("INDI reader failed") from failure
-            connection.sendall(xml.encode("utf-8"))
+            if self.trace is not None:
+                # Record before sending so a fast reply never precedes its request.
+                self.trace.sent(xml)
+            try:
+                connection.sendall(xml.encode("utf-8"))
+            except OSError as exc:
+                if self.trace is not None:
+                    self.trace.record("send_failed", error=repr(exc))
+                raise
 
     def _reader_failure_locked(self) -> BaseException | None:
         """Return reader failure, detecting silent thread termination as failure."""
@@ -390,7 +424,7 @@ class IndiTransport:
             merged = dict(previous.values) if previous is not None else {}
             merged.update(values)
             self._revision += 1
-            self._properties[(device, name)] = IndiProperty(
+            current = IndiProperty(
                 device=device,
                 name=name,
                 kind=kind,
@@ -400,4 +434,11 @@ class IndiTransport:
                 received_at=time.monotonic(),
                 revision=self._revision,
             )
+            self._properties[(device, name)] = current
+            if self.trace is not None:
+                # Inside the lock: no waiter can act on this update before it is logged.
+                self.trace.received(
+                    device=device, name=name, kind=kind, state=current.state,
+                    changed=values, values=merged, revision=current.revision, tag=node.tag,
+                )
             self._condition.notify_all()

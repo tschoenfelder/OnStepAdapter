@@ -1,9 +1,9 @@
-# OnStepAdapter 0.7.6 SDK
+# OnStepAdapter 0.7.11 SDK
 
 This release is an in-process INDI client, not a serial-port owner. It uses
 the unchanged `LX200 OnStep` device in the Raspberry's local `indiserver`.
 Python 3.13 or newer is required; there are no runtime Python dependencies.
-Install `onstep_adapter-0.7.6-py3-none-any.whl` with `python3 -m pip install`.
+Install `onstep_adapter-0.7.11-py3-none-any.whl` with `python3 -m pip install`.
 
 ## Connection And Cleanup
 
@@ -21,7 +21,7 @@ with OnStepClient(config=config) as client:
 not using the context manager. `close()`
 stops the client's own meridian supervisor and closes its INDI socket; it
 does not disconnect the shared device, stop the server, or evict other apps.
-No serial or raw LX200 fallback ships in the 0.7.6 wheel.
+No serial or raw LX200 fallback ships in the 0.7.11 wheel.
 
 The transport treats the background INDI reader as part of connection health.
 Any unexpected exception or return marks the session failed, wakes property
@@ -220,7 +220,7 @@ ra_recovery_max_seconds = 2.0
 stall_timeout_seconds = 3.0
 ```
 
-The caller must explicitly execute `park()`, verify `confirmed`, call
+The caller must explicitly execute `park().wait()`, verify `confirmed`, call
 `set_mode()`, then explicitly `unpark()`. This is required in both directions,
 including when the mount was already parked. PARK waits for agreement between
 the raw OnStep `P` status and standard INDI `TELESCOPE_PARK`, plus an idle hold.
@@ -324,17 +324,54 @@ ESC and Ctrl-C request a
 verified stop and never start automatic PARK/HOME cleanup. `p` explicitly
 parks; only then may `a` consume that fresh authorization to return to
 astronomical mode. This physical UAT remains outstanding.
+## Movements Return A Handle
+
+`mount.park()`, `mount.go_home()`, `mount.move_ra_axis_deg()`,
+`mount.move_dec_axis_deg()` and the arcsecond aliases `move_ra()` /
+`move_dec()` never wait for the mount. Each one checks its arguments, sends
+nothing that blocks, and returns a `MotionHandle` at once while a worker
+thread drives the move. The caller's own thread is therefore always free to
+stop it:
+
+```python
+move = client.mount.go_home()
+while not move.done:
+    progress = move.progress()   # kind, state, stage, elapsed_s, fraction, last_raw_status
+    if operator_pressed_stop():
+        move.stop()              # ABORT + tracking off, then verified stop
+        break
+    time.sleep(0.1)
+result = move.wait()             # IndiPositionResult / IndiAxisMoveResult
+```
+
+- `stop(timeout=5.0)` sends ABORT and tracking off before it waits for
+  anything and returns the verified `IndiStopResult`. `mount.stop()` and the
+  meridian supervisor stop a running handle's move in the same way.
+- `progress()` never blocks. `state` is `running`, `succeeded`, `failed` or
+  `stopped`; `fraction` is 0..1 for axis moves and `None` for PARK and HOME.
+- `wait(timeout=None)` blocks only the caller. It returns the move's result,
+  raises `MotionStopped` (with `.stop_result`) when the move was stopped,
+  re-raises the error an axis move ended with, and raises `TimeoutError` if
+  the move is still running after `timeout` (the move carries on).
+- Only one move runs at a time. Starting another move, `unpark()` or
+  `route_park_to_home()` while one is active raises `RuntimeError`.
+- `close()` stops a move that is still running.
+
+A stop request is seen by the worker within 0.1 s. `unpark()` still returns
+its result directly: it does not slew, and it switches off OnStepX's resumed
+tracking before returning.
 
 ## RA And DEC Axis-Angle Test
 
-`mount.move_ra_axis_deg(angle)` and `mount.move_dec_axis_deg(angle)` issue a
-finite INDI coordinate target, not an indefinite manual-motion switch. Positive
-RA increases hour angle (westward); positive DEC moves northward. These
-coordinate-target operations are restricted to astronomical operating mode.
-Terrestrial RA is fail-closed because RA/DEC cannot independently verify
-mechanical Axis-1 travel on the tested INDI path. Both require
+`mount.move_ra_axis_deg(angle)` and `mount.move_dec_axis_deg(angle)` run a
+bounded, measured INDI manual-motion sequence on only the requested axis. Positive
+RA increases hour angle (westward); positive DEC follows OnStep's mechanical
+jog direction, which lowers the published sky DEC (from HOME at DEC +90, the
+DEC-first move toward the bound is a positive DEC move). These operations are
+restricted to astronomical operating mode when shared mode management is
+configured. Both require
 fresh unparked status, tracking off, no slew/fault/limit, a stable pier side,
-and a request from 30 arcseconds through 10 degrees. HOME and time/site authority are not
+and a request from 30 arcseconds through 15 degrees. HOME and time/site authority are not
 prerequisites for this terrestrial/manual operation. DEC targets are limited
 by `[movement].min_dec_deg` and `max_dec_deg`; the example uses the inclusive
 range -80 through +80 degrees. `[movement].min_alt_deg` is also inclusive and
@@ -342,7 +379,24 @@ defaults to -2 degrees. When an authoritative HA sample is available, the
 adapter computes the projected target altitude and refuses a lower endpoint
 before sending any INDI command. Without astronomical time authority, a
 HOME-neutral terrestrial move retains the DEC gate but cannot infer altitude
-from HOME's diagnostic coordinates. Each move monitors the path, disables
+from HOME's diagnostic coordinates. DEC comes first: after connecting, after
+`go_home()`/`route_park_to_home()` and whenever a fresh reading reports HOME,
+RA is undefined (HOME points at the pole) and an RA-axis move raises
+`RaAxisUndefinedError` unsent until one DEC move has completed;
+`mount.ra_axis_defined` reports it. A DEC move that starts outside the DEC
+bound may run when it brings DEC closer to the bound.
+
+Hold-to-move: `handle = client.mount.jog_dec(+1, rate_index=5)` starts OnStep
+manual motion at once and returns a `JogHandle`. Call `handle.renew()` at
+least every `lease_s` seconds (default 0.5) while the button is held and
+`handle.release()` when it is let go; `handle.wait()` returns an
+`IndiJogResult` whose `ended_by` is `released`, `lease_expired`,
+`max_duration` or `limit`. A jog checks the same safety inputs as a finite
+move, stops when DEC or the projected altitude would leave the `[movement]`
+bound, and ends with motion off, tracking off and a confirmed stop.
+`handle.stop()` / `mount.stop()` is the emergency stop. The lease is watched
+inside this process, so a crash of the whole process mid-jog does not stop
+the mount. Each move monitors the path, disables
 tracking after arrival and confirms fresh stationary status. Logical
 coordinates are not independent encoder measurements; visually verify each stage. Compatibility
 aliases `move_ra(offset_arcsec, mode="manual")` and
@@ -353,7 +407,7 @@ requests fail clearly and are never rounded up. Issue #14's documented seeds
 of 110″, 159″, 195″, 283″, 897″ and 1595″ are covered by mocked paths.
 
 The runner stages PARK -> UNPARK without moving to HOME, then runs paired
-+1/-1, +5/-5 and +10/-10 degrees on RA, then DEC. Every movement requires
++1/-1, +5/-5, +10/-10 and +15/-15 degrees on RA, then DEC. Every movement requires
 ENTER and physical clearance confirmation. Final HOME -> PARK also requires
 confirmation and is the separate live `H` check. ESC, `f` or Ctrl-C requests
 emergency stop and suppresses later route commands. Add `--sync-time-location`
@@ -401,6 +455,45 @@ On 2026-09-22 a bounded live INDI test moved the focuser 15145 -> 16145 ->
 reports confirmed PARKED before and after each leg. An independent final
 query again showed 15145 and PARKED. This was a remote protocol test, not
 visual certification of full physical focuser travel.
+
+## Transaction Trace
+
+Every run can be recorded for later comparison of real-mount behavior with
+the expected behavior. Tracing is off by default. Enable it in the
+installation TOML:
+
+```toml
+[trace]
+path = "~/.local/state/onstep_adapter/trace-{utc}.jsonl"
+```
+
+or per client with `OnStepClient(config=config, trace="run.jsonl")`.
+`{utc}` becomes the client's start time. The JSON Lines file contains:
+
+- `send`: every INDI vector the adapter writes (property and element values),
+  logged before it leaves the socket;
+- `recv`: every property definition or update received, with property state,
+  changed and merged values, and the decoded `:GU#` flags for `OnStep Status`;
+- `call` / `return` / `error`: every public mount operation and `connect()` /
+  `sync_time_location()`, with arguments, duration and result or exception.
+
+Each record carries a sequence number, monotonic seconds since the session
+started, UTC and the thread name. Write failures are counted, never raised,
+so tracing cannot block a STOP.
+
+Summarize or compare runs:
+
+```bash
+python3 -m onstep_adapter.tools.trace_compare summary real.jsonl
+python3 -m onstep_adapter.tools.trace_compare diff expected.jsonl real.jsonl
+```
+
+`diff` pairs public operations in order and reports as MISMATCH any
+difference in INDI writes, observed motion-state sequence, coordinate
+property states, outcome or result flags. Duration, motion start, motion end
+and tracking time are compared with a relative tolerance (`--time-tolerance`,
+default 50 %, at least `--time-floor` 1 s) and reported as TIMING warnings.
+The exit code is 0 for matching behavior and 1 otherwise.
 
 ## Release Scope
 

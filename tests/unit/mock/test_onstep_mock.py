@@ -1,0 +1,408 @@
+"""The real onstep_adapter driven end to end against the virtual OnStepX mount."""
+
+import threading
+import time
+
+import pytest
+
+from onstep_adapter import MotionStopped, RaAxisUndefinedError
+from onstep_mock import Pose, SimConfig, SimulatedOnStepServer, VirtualMount, altaz
+
+DEVICE = "LX200 OnStep"
+
+
+def test_unpark_stops_onstepx_auto_tracking_at_once(onstep_sim, onstep_client):
+    result = onstep_client.mount.unpark()
+
+    assert result.unparked_confirmed
+    mount = onstep_sim.mount
+    assert not mount.parked and not mount.tracking and mount.motion == "IDLE"
+    assert 0.0 < mount.tracking_on_seconds < 1.0
+    written = [(w.property, w.values) for w in onstep_sim.writes]
+    assert written.index(("TELESCOPE_PARK", {"UNPARK": "On"})) < written.index(
+        ("TELESCOPE_TRACK_STATE", {"TRACK_OFF": "On"})
+    )
+    onstep_sim.assert_no_forbidden()
+
+
+def test_go_home_reaches_fixed_pole_pose(onstep_sim, onstep_client):
+    onstep_client.mount.unpark()
+    result = onstep_client.mount.go_home().wait(timeout=30)
+
+    assert result.confirmed
+    mount = onstep_sim.mount
+    assert mount.at_home and "H" in mount.raw_gu
+    assert mount.dec_deg == pytest.approx(90.0)
+    assert mount.ra_h == pytest.approx((mount.lst_h + 6.0) % 24.0, abs=1e-3)
+    assert mount.home_pose == Pose(-6.0, 90.0, "west")
+
+
+def test_park_returns_to_the_single_stored_pose(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=30.0, parked=False)
+    time.sleep(0.4)  # let the client receive the new pose
+    result = onstep_client.mount.park().wait(timeout=30)
+
+    assert result.confirmed
+    mount = onstep_sim.mount
+    assert mount.parked and not mount.tracking
+    assert (mount.ha_h, mount.dec_deg) == pytest.approx((0.0, 52.0))
+
+
+def test_axis_move_ends_on_target_without_tracking(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    ha_before = onstep_sim.mount.ha_h
+    # Positive DEC is OnStep's MOTION_NORTH jog (this mock raises DEC with it; on the real rig,
+    # at pier side east, it lowers the published DEC). Only the DEC axis may move.
+    result = onstep_client.mount.move_dec_axis_deg(1.5).wait(timeout=30)
+
+    assert result.stop_confirmed
+    mount = onstep_sim.mount
+    assert abs(mount.dec_deg - 40.0) == pytest.approx(1.5, abs=1.5 * 0.03)
+    assert mount.ha_h == ha_before  # the RA axis never moved (field report b977fe85)
+    assert not mount.tracking and mount.motion == "IDLE"
+    assert mount.pier_side == "west"
+
+
+def test_first_move_after_connecting_must_be_dec(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    writes = len(onstep_sim.writes)
+    assert not onstep_client.mount.ra_axis_defined
+
+    with pytest.raises(RaAxisUndefinedError, match="move the DEC axis first"):
+        onstep_client.mount.move_ra_axis_deg(1.0)
+    assert onstep_client.active_motion is None
+    assert len(onstep_sim.writes) == writes
+
+    onstep_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
+    assert onstep_client.mount.ra_axis_defined
+    ha_before = onstep_sim.mount.ha_h
+    dec_before = onstep_sim.mount.dec_deg
+    result = onstep_client.mount.move_ra_axis_deg(1.0).wait(timeout=30)
+    assert result.stop_confirmed
+    assert onstep_sim.mount.ha_h == pytest.approx(ha_before + 1.0 / 15.0, abs=0.01)
+    assert onstep_sim.mount.dec_deg == dec_before  # the DEC axis never moved
+
+
+def test_finite_axis_moves_never_send_a_goto(onstep_sim, onstep_client):
+    """Field report b977fe85: a goto to "current RA, new DEC" also turns the RA motor (OnStep
+    takes RA to the whole second). Finite moves use single-axis motion only."""
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    writes = len(onstep_sim.writes)
+    onstep_client.mount.move_dec_axis_deg(0.2).wait(timeout=30)
+    onstep_client.mount.move_ra_axis_deg(-0.2).wait(timeout=30)
+    sent = {w.property for w in onstep_sim.writes[writes:]}
+    assert "EQUATORIAL_EOD_COORD" not in sent and "ON_COORD_SET" not in sent
+    assert {"TELESCOPE_MOTION_NS", "TELESCOPE_MOTION_WE"} <= sent
+
+
+def test_going_home_requires_a_dec_move_before_ra_again(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    onstep_client.mount.move_dec_axis_deg(1.0).wait(timeout=30)
+    assert onstep_client.mount.ra_axis_defined
+
+    onstep_client.mount.go_home().wait(timeout=30)
+
+    assert not onstep_client.mount.ra_axis_defined
+    writes = len(onstep_sim.writes)
+    with pytest.raises(RaAxisUndefinedError):
+        onstep_client.mount.move_ra_axis_deg(1.0)
+    assert len(onstep_sim.writes) == writes
+
+
+def test_at_home_a_small_dec_move_comes_first_then_ra(onstep_sim, onstep_client):
+    onstep_client.mount.unpark()
+    onstep_client.mount.go_home().wait(timeout=30)
+    time.sleep(0.4)
+    assert onstep_sim.mount.at_home
+    with pytest.raises(RaAxisUndefinedError):
+        onstep_client.mount.move_ra_axis_deg(1.0)
+
+    onstep_client.mount.move_dec_axis_deg(1.0).wait(timeout=30)
+
+    mount = onstep_sim.mount
+    # Single-axis motion lands within max(10", 3%) of the requested angle.
+    assert mount.dec_deg == pytest.approx(89.0, abs=0.03) and not mount.at_home
+    assert onstep_client.mount.ra_axis_defined
+
+
+def _hold(handle, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        assert handle.renew()
+        time.sleep(0.1)
+
+
+def test_jog_moves_while_held_and_stops_on_release(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    handle = onstep_client.mount.jog_dec(1, rate_index=5)
+    _hold(handle, 1.0)
+    assert onstep_sim.mount.motion == "MANUAL"
+    handle.release()
+    result = handle.wait(timeout=10)
+
+    assert result.ended_by == "released" and result.stop_confirmed
+    mount = onstep_sim.mount
+    assert mount.motion == "IDLE" and not mount.tracking
+    assert mount.dec_deg > 40.1
+    assert onstep_client.mount.ra_axis_defined
+    written = [(w.property, w.values) for w in onstep_sim.writes]
+    assert ("TELESCOPE_MOTION_NS", {"MOTION_NORTH": "Off"}) in written
+
+
+def test_jog_stops_by_itself_when_it_is_not_renewed(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    onstep_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
+    handle = onstep_client.mount.jog_ra(-1, rate_index=5, lease_s=0.3)
+    result = handle.wait(timeout=10)  # nobody renews: the deadman ends it
+
+    assert result.ended_by == "lease_expired" and result.moving_s < 1.0
+    assert onstep_sim.mount.motion == "IDLE"
+    assert not handle.renew()
+
+
+def test_ra_jog_is_refused_until_dec_has_moved(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    writes = len(onstep_sim.writes)
+    with pytest.raises(RaAxisUndefinedError):
+        onstep_client.mount.jog_ra(1)
+    assert onstep_client.active_motion is None
+    assert len(onstep_sim.writes) == writes
+
+
+def test_stop_ends_a_jog_at_once(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    handle = onstep_client.mount.jog_dec(-1, rate_index=5, lease_s=2.0)
+    onstep_sim.wait_until(lambda m: m.motion == "MANUAL", timeout=3)
+    assert onstep_client.mount.stop().stopped_confirmed
+    with pytest.raises(MotionStopped):
+        handle.wait(timeout=5)
+    assert onstep_sim.mount.motion == "IDLE"
+
+
+@pytest.fixture
+def slow_sim():
+    with SimulatedOnStepServer(SimConfig(speed=1.0)) as sim:
+        yield sim
+
+
+@pytest.fixture
+def slow_client(slow_sim):
+    from onstep_mock.testing import runtime_config, wait_for_live_status
+    from onstep_adapter import OnStepClient
+
+    slow_sim.place(ha_h=-2.0, dec_deg=30.0, parked=False)
+    with OnStepClient(config=runtime_config(slow_sim)) as client:
+        wait_for_live_status(client)
+        yield client
+
+
+def test_go_home_returns_at_once_and_its_handle_stops_the_slew(slow_sim, slow_client):
+    started = time.monotonic()
+    move = slow_client.mount.go_home()
+    assert time.monotonic() - started < 0.5  # the caller is never blocked
+
+    slow_sim.wait_until(lambda m: m.motion == "SLEWING", timeout=3)
+    time.sleep(0.5)
+    progress = move.progress()
+    assert (progress.kind, progress.state, progress.stage) == ("home", "running", "moving")
+    assert not move.done
+
+    stopped = move.stop()
+
+    assert stopped.stopped_confirmed
+    with pytest.raises(MotionStopped) as raised:
+        move.wait(timeout=2)
+    assert raised.value.stop_result is stopped
+    assert move.state == "stopped" and move.progress().stage == "stopped"
+    mount = slow_sim.mount
+    assert mount.motion == "IDLE" and not mount.at_home and not mount.tracking
+    assert 30.0 < mount.dec_deg < 90.0
+    assert "TELESCOPE_ABORT_MOTION" in [w.property for w in slow_sim.writes]
+
+
+def test_mount_stop_also_ends_a_running_handle(slow_sim, slow_client):
+    move = slow_client.mount.park()
+    slow_sim.wait_until(lambda m: m.motion == "SLEWING", timeout=3)
+
+    stopped = slow_client.mount.stop()
+
+    assert stopped.stopped_confirmed
+    with pytest.raises(MotionStopped):
+        move.wait(timeout=2)
+    assert move.stop_result is stopped
+    assert not slow_sim.mount.parked and slow_sim.mount.motion == "IDLE"
+
+
+def test_only_one_move_runs_at_a_time(slow_sim, slow_client):
+    move = slow_client.mount.go_home()
+    with pytest.raises(RuntimeError, match="active"):
+        slow_client.mount.park()
+    with pytest.raises(RuntimeError, match="active"):
+        slow_client.mount.move_dec_axis_deg(1.0)
+    with pytest.raises(RuntimeError, match="active"):
+        slow_client.mount.unpark()
+    move.stop()
+    with pytest.raises(MotionStopped):
+        move.wait(timeout=2)
+    assert slow_client.active_motion is None
+
+
+def test_axis_move_reports_fraction_and_can_be_stopped(slow_sim, slow_client):
+    move = slow_client.mount.move_dec_axis_deg(8.0)
+    # A single-axis move at OnStep's 48x manual rate (0.2 deg/s at this speed).
+    slow_sim.wait_until(lambda m: abs(m.dec_deg - 30.0) > 0.3, timeout=5)
+    deadline = time.monotonic() + 2
+    while (move.progress().fraction or 0.0) <= 0.0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    fraction = move.progress().fraction
+    assert fraction is not None and 0.0 < fraction < 1.0
+
+    assert move.stop().stopped_confirmed
+    with pytest.raises(MotionStopped):
+        move.wait(timeout=2)
+    mount = slow_sim.mount
+    assert 0.3 < abs(mount.dec_deg - 30.0) < 8.0 and mount.motion == "IDLE"
+
+
+def test_invalid_axis_move_is_refused_before_anything_starts(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    writes = len(onstep_sim.writes)
+    with pytest.raises(ValueError):
+        onstep_client.mount.move_dec_axis_deg(20.0)
+    assert onstep_client.active_motion is None
+    assert len(onstep_sim.writes) == writes
+
+
+def test_close_stops_a_move_that_is_still_running(slow_sim):
+    from onstep_mock.testing import runtime_config, wait_for_live_status
+    from onstep_adapter import OnStepClient
+
+    slow_sim.place(ha_h=-2.0, dec_deg=30.0, parked=False)
+    with OnStepClient(config=runtime_config(slow_sim)) as client:
+        wait_for_live_status(client)
+        move = client.mount.go_home()
+        slow_sim.wait_until(lambda m: m.motion == "SLEWING", timeout=3)
+    assert move.done
+    slow_sim.wait_until(lambda m: m.motion == "IDLE", timeout=3)
+    assert not slow_sim.mount.at_home
+
+
+@pytest.mark.parametrize("property_name, element", [
+    ("TELESCOPE_HOME", "SET"),
+    ("ON_COORD_SET", "SYNC"),
+    ("TELESCOPE_PARK_OPTION", "PARK_CURRENT"),
+    ("TELESCOPE_PARK_OPTION", "PARK_WRITE_DATA"),
+])
+def test_set_home_set_park_and_sync_are_rejected_and_logged(
+    onstep_sim, onstep_client, property_name, element,
+):
+    before = onstep_sim.mount
+    with pytest.raises(RuntimeError, match="INDI rejected"):
+        onstep_client._transport.request_switch(DEVICE, property_name, element)
+
+    after = onstep_sim.mount
+    assert (after.home_pose, after.park_pose) == (before.home_pose, before.park_pose)
+    assert [w.property for w in onstep_sim.forbidden] == [property_name]
+    with pytest.raises(AssertionError):
+        onstep_sim.assert_no_forbidden()
+
+
+def test_injected_limit_blocks_unpark(onstep_sim, onstep_client):
+    onstep_sim.inject_fault("LIMIT")
+    time.sleep(0.4)
+
+    result = onstep_client.mount.unpark()
+
+    assert not result.unparked_confirmed
+    assert "l" in onstep_sim.mount.raw_gu and onstep_sim.mount.parked
+
+
+def test_manual_motion_repeat_without_off_rearm_starts_nothing(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    transport = onstep_client._transport
+    transport.issue_switch(DEVICE, "TELESCOPE_MOTION_NS", "MOTION_NORTH")
+    onstep_sim.wait_until(lambda m: m.motion == "MANUAL", timeout=2)
+    time.sleep(0.3)
+    assert onstep_sim.mount.dec_deg > 40.0
+
+    # Motion ends without the switch being reset (as after a controller stop).
+    onstep_sim.place()
+    transport.issue_switch(DEVICE, "TELESCOPE_MOTION_NS", "MOTION_NORTH")
+    time.sleep(0.3)
+    assert onstep_sim.mount.motion == "IDLE"
+
+    # An explicit all-OFF re-arm makes the same direction start again.
+    transport._send(
+        '<newSwitchVector device="LX200 OnStep" name="TELESCOPE_MOTION_NS">'
+        '<oneSwitch name="MOTION_NORTH">Off</oneSwitch>'
+        '<oneSwitch name="MOTION_SOUTH">Off</oneSwitch></newSwitchVector>'
+    )
+    time.sleep(0.2)
+    transport.issue_switch(DEVICE, "TELESCOPE_MOTION_NS", "MOTION_NORTH")
+    onstep_sim.wait_until(lambda m: m.motion == "MANUAL", timeout=2)
+    transport.issue_switch(DEVICE, "TELESCOPE_ABORT_MOTION", "ABORT")
+    onstep_sim.wait_until(lambda m: m.motion == "IDLE", timeout=3)
+
+
+def test_non_tracking_pose_is_earth_fixed_and_ra_drifts():
+    mount = VirtualMount.create(SimConfig(start_parked=False, start_pose=Pose(-1.0, 45.0)))
+    ra_before, alt_before = mount.ra_h(), altaz(mount.ha_h, mount.dec_deg, 50.336)
+    mount.tick(60.0, time.monotonic())
+    assert mount.ha_h == -1.0
+    assert altaz(mount.ha_h, mount.dec_deg, 50.336) == alt_before
+    assert (mount.ra_h() - ra_before) % 24.0 > 0.0
+
+    mount.set_tracking(True, time.monotonic())
+    mount.tick(3600.0, time.monotonic())
+    assert mount.ha_h == pytest.approx(-1.0 + 1.0027379, abs=1e-6)
+
+
+def test_wait_until_reports_last_state_on_timeout(onstep_sim):
+    with pytest.raises(TimeoutError, match="last state"):
+        onstep_sim.wait_until(lambda m: not m.parked, timeout=0.2)
+
+
+def test_reconnect_device_recovers_a_driver_that_lost_its_serial_port(onstep_sim, onstep_client):
+    """Field incident 908a26b9: a USB reset left the driver polling a dead serial handle --
+    no OnStep Status, the position in "Alert" -- while indiserver kept running. Reopening the
+    INDI device (DISCONNECT, CONNECT) brings fresh status back; the mount never moves."""
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=True)
+    time.sleep(0.4)
+    onstep_sim.lose_serial()
+    time.sleep(3.5)  # past OnStepAdapter's 3 s freshness limit
+    stale = onstep_client.mount.get_status()
+    assert "onstep_status_not_fresh" in stale.blockers
+    unpark = onstep_client.mount.unpark()
+    assert not unpark.unparked_confirmed  # refused on the stale status, as on the rig
+
+    result = onstep_client.mount.reconnect_device(timeout=10.0)
+
+    assert result.recovered and result.error is None
+    assert not onstep_sim.serial_lost
+    deadline = time.monotonic() + 3.0
+    while "onstep_status_not_fresh" in onstep_client.mount.get_status().blockers:
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    sent = [(w.property, w.values) for w in onstep_sim.writes]
+    assert ("CONNECTION", {"DISCONNECT": "On"}) in sent and ("CONNECTION", {"CONNECT": "On"}) in sent
+    assert onstep_sim.mount.parked and onstep_sim.mount.motion == "IDLE"
+    assert onstep_client.mount.unpark().unparked_confirmed
+
+
+def test_reconnect_device_is_refused_while_a_move_runs(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+    time.sleep(0.4)
+    handle = onstep_client.mount.jog_dec(1, rate_index=5, lease_s=2.0)
+    onstep_sim.wait_until(lambda m: m.motion == "MANUAL", timeout=3)
+    with pytest.raises(RuntimeError, match="is active"):
+        onstep_client.mount.reconnect_device()
+    handle.release()
+    handle.wait(timeout=10)

@@ -1,0 +1,92 @@
+"""Dense independent verification of the spherical coordinate calculations.
+
+These tests deliberately use Astropy's frame transformation as the oracle.
+They do not prove which mechanical path a GEM firmware selects for a GoTo.
+"""
+
+import pytest
+
+pytest.importorskip("astropy", reason="the Astropy oracle needs astropy installed")
+
+import astropy.units as u  # noqa: E402
+import numpy as np  # noqa: E402
+from astropy.coordinates import AltAz, EarthLocation, HADec, SkyCoord  # noqa: E402
+from astropy.time import Time  # noqa: E402
+
+from onstep_adapter.indi_axis_motion import IndiAxisMover  # noqa: E402
+
+
+LATITUDE_DEG = 50.336
+LONGITUDE_DEG = 8.533
+OBSTIME = Time("2026-10-20T20:00:00", scale="utc")
+LOCATION = EarthLocation(
+    lat=LATITUDE_DEG * u.deg, lon=LONGITUDE_DEG * u.deg, height=304 * u.m
+)
+ALTAZ = AltAz(obstime=OBSTIME, location=LOCATION, pressure=0 * u.hPa)
+HADEC = HADec(obstime=OBSTIME, location=LOCATION, pressure=0 * u.hPa)
+
+
+def mover() -> IndiAxisMover:
+    return IndiAxisMover(None, "LX200 OnStep", LATITUDE_DEG, LONGITUDE_DEG, None, None)
+
+
+def test_equatorial_to_horizontal_dense_grid_against_astropy() -> None:
+    subject = mover()
+    ha_values = []
+    dec_values = []
+    alt_values = []
+    az_values = []
+    for ha_deg in range(-180, 180, 2):
+        for dec_deg in range(-88, 89, 2):
+            alt, az = subject._horizontal_from_equatorial(ha_deg, dec_deg)
+            ha_values.append(ha_deg)
+            dec_values.append(dec_deg)
+            alt_values.append(alt)
+            az_values.append(az)
+    reference = SkyCoord(
+        ha=np.asarray(ha_values) * u.deg,
+        dec=np.asarray(dec_values) * u.deg,
+        frame=HADEC,
+    ).transform_to(ALTAZ)
+    actual = SkyCoord(
+        alt=np.asarray(alt_values) * u.deg,
+        az=np.asarray(az_values) * u.deg,
+        frame=ALTAZ,
+    )
+    worst_arcsec = float(np.max(reference.separation(actual).arcsec))
+    print(f"forward cases={len(actual)} worst_error_arcsec={worst_arcsec:.12g}")
+    assert len(actual) == 16_020
+    assert worst_arcsec < 0.001
+def test_horizontal_to_equatorial_dense_grid_against_astropy() -> None:
+    subject = mover()
+    lst_hours = 8.0
+    alt_values = []
+    az_values = []
+    ha_values = []
+    dec_values = []
+    for alt_deg in range(-88, 89, 2):
+        for az_deg in range(0, 360, 2):
+            ra_hours, dec_deg = subject._equatorial_from_horizontal(
+                alt_deg, az_deg, lst_hours
+            )
+            ha_deg = ((lst_hours - ra_hours + 12.0) % 24.0 - 12.0) * 15.0
+            alt_values.append(alt_deg)
+            az_values.append(az_deg)
+            ha_values.append(ha_deg)
+            dec_values.append(dec_deg)
+    reference = SkyCoord(
+        alt=np.asarray(alt_values) * u.deg,
+        az=np.asarray(az_values) * u.deg,
+        frame=ALTAZ,
+    ).transform_to(HADEC)
+    actual = SkyCoord(
+        ha=np.asarray(ha_values) * u.deg,
+        dec=np.asarray(dec_values) * u.deg,
+        frame=HADEC,
+    )
+    worst_arcsec = float(np.max(reference.separation(actual).arcsec))
+    print(f"inverse cases={len(actual)} worst_error_arcsec={worst_arcsec:.12g}")
+    assert len(actual) == 16_020
+    assert worst_arcsec < 0.001
+
+
