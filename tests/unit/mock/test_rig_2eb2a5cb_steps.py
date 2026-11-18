@@ -94,3 +94,25 @@ def test_repeated_steps_use_the_learned_braking_and_need_one_pass(rig_sim, rig_c
     rig_client.mount.move_dec_axis_deg(-5.0).wait(timeout=120)
     assert _passes(rig_sim, "TELESCOPE_MOTION_NS") - before == 1
     assert abs(rig_sim.mount.dec_deg - dec_before) == pytest.approx(5.0, abs=0.15)
+
+
+def test_small_steps_land_in_one_pass_although_the_first_fast_reading_comes_late(
+    rig_sim, rig_client
+):
+    """Field capture 2026-11-18 21:00: five 1 degree DEC steps; two overshot by 0.17-0.28 deg
+    and needed one or two correction passes. After a switch turns On the driver keeps its
+    1.5 s cycle until its next poll, so a 1 degree step is nearly over before the first fast
+    reading: the stop must come from the learned speed-up, not wait for readings."""
+    rig_client.mount.move_dec_axis_deg(5.0).wait(timeout=120)  # learns braking + speed-up
+    for pause_s in (0.0, 0.3, 0.6, 0.9, 1.2):  # the press falls anywhere in the poll cycle
+        time.sleep(pause_s)
+        before = _passes(rig_sim, "TELESCOPE_MOTION_NS")
+        dec_before = rig_sim.mount.dec_deg
+        started = time.monotonic()
+        rig_client.mount.move_dec_axis_deg(1.0).wait(timeout=60)
+        elapsed = time.monotonic() - started
+        passes = _passes(rig_sim, "TELESCOPE_MOTION_NS") - before
+        moved = abs(rig_sim.mount.dec_deg - dec_before)
+        assert moved == pytest.approx(1.0, abs=0.03), (moved, passes)
+        assert passes == 1, (moved, passes)
+        assert elapsed < 7.0, elapsed

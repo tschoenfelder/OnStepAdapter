@@ -93,6 +93,7 @@ class SimulatedOnStepServer:
         self._focuser_target: int | None = None
         self._focuser_position = 15000.0
         self._last_publish = 0.0
+        self._published_with_switch_on = False
         self._guide_props: set[str] = set()
 
     # ------------------------------------------------------------------ setup
@@ -536,7 +537,11 @@ class SimulatedOnStepServer:
         runs, `idle_publish_period_s` (when set) otherwise."""
         idle = self.config.idle_publish_period_s
         mount = self._mount
-        if idle is None or mount.manual_switch_on or mount.motion == "SLEWING":
+        if idle is None or mount.motion == "SLEWING":
+            return self.config.status_period_s
+        # The real driver keeps its idle cycle until its next poll after a switch turns On
+        # (field captures 2eb2a5cb, fd84c75f: the first fast reading came 0.7-1.5 s after On).
+        if mount.manual_switch_on and self._published_with_switch_on:
             return self.config.status_period_s
         return idle
 
@@ -612,3 +617,4 @@ class SimulatedOnStepServer:
             if prop.elements != elements or prop.state != state:
                 self._publish(name)
         self._last_publish = now
+        self._published_with_switch_on = self._mount.manual_switch_on
