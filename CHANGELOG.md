@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.15 - Unreleased
+
+- Coarse single-axis steps no longer overshoot on an accelerating mount. Field
+  incident 56b54f01: a 0.5 s first pass at the fastest rate covered only 0.14 deg
+  while the mount accelerated; the drive took that as the rate, planned an 8 s
+  second pass and moved about 15 deg instead of 10. Now every pass stops early from
+  the live position once the remaining angle is within `LIVE_STOP_LEAD_S` (0.6 s) of
+  travel (but never before 3/4 of the pass);
+  a pass may last at most `PASS_GROWTH_LIMIT` (3) times the previous one; a
+  first pass at an unmeasured fast rate (8/9) lasts at least 1 s; `MAX_PASSES` is
+  8. The mock gains `SimConfig.manual_accel_deg_per_s2` (acceleration and braking).
+
 ## 0.7.14 - Unreleased
 
 - Finite single-axis moves may use `TELESCOPE_SLEW_RATE` 8 and 9 (OnStepX: half of

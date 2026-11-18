@@ -57,7 +57,19 @@ SIDEREAL_ARCSEC_PER_S = 15.041
 MIN_PASS_S = 0.75
 #: A pass never lasts longer than this.
 MAX_PASS_S = 90.0
-MAX_PASSES = 4
+MAX_PASSES = 8
+#: Field incident 56b54f01: a 0.5 s first pass at the fastest rate covered only 0.14 deg while
+#: the mount accelerated; the drive took that as the rate, planned an 8 s second pass and moved
+#: ~15 deg instead of 10. Three guards:
+#: - a pass may last at most this many times the previous one (a rate measured on a short,
+#:   ramp-dominated pass is never stretched far);
+PASS_GROWTH_LIMIT = 3.0
+#: - a first pass at a rate not yet measured lasts at least this long (so cruise, not the
+#:   ramp, dominates what it measures) -- only for the fast rates 8/9;
+MIN_FAST_FIRST_PASS_S = 1.0
+#: - every pass stops early from the LIVE position once the remaining angle is within the
+#:   distance it covers in this time at its rate (reading latency plus braking).
+LIVE_STOP_LEAD_S = 0.6
 SEED_FRACTION = 0.6
 #: Smallest change that counts as "the axis moved" in the first pass.
 MIN_DETECTED_ARCSEC = 3.0
@@ -205,6 +217,12 @@ class SingleAxisDrive:
             planned_s = abs(remaining) / rate
             if not passes and not measured:
                 planned_s *= SEED_FRACTION
+            if index in ASSUMED_FAST_RATE_ARCSEC_PER_S and not measured:
+                planned_s = max(planned_s, MIN_FAST_FIRST_PASS_S)
+            if passes:
+                planned_s = min(
+                    planned_s, max(MIN_FAST_FIRST_PASS_S, PASS_GROWTH_LIMIT * passes[-1].moving_s)
+                )
             planned_s = min(planned_s, MAX_PASS_S)
             if self._monotonic() + planned_s >= deadline:
                 raise TimeoutError("Axis move would not finish before its deadline")
@@ -215,6 +233,11 @@ class SingleAxisDrive:
             transport.issue_switch(device, name, element)
             started = self._monotonic()
             token.report("moving", fraction=max(0.0, achieved) / requested)
+            pass_target = abs(remaining)
+            # Stop early by the lead, but never before 3/4 of the pass: on a short pass the lead
+            # would otherwise stop it at the first reading and waste passes.
+            stop_at = max(pass_target - rate * LIVE_STOP_LEAD_S, 0.75 * pass_target)
+            seen_revision = latest.coordinates_revision
             while self._monotonic() - started < planned_s:
                 pause(min(poll_s, max(0.0, planned_s - (self._monotonic() - started))))
                 latest = mover.observe()
@@ -232,6 +255,16 @@ class SingleAxisDrive:
                     raise RuntimeError("Pier side changed during an axis move")
                 if self._leaves_bound(before, latest):
                     raise RuntimeError("Axis move reached the configured movement bound")
+                if (
+                    latest.coordinates_revision > seen_revision and latest.coordinates_live
+                    and latest.dec_deg is not None and latest.ra_hours is not None
+                ):
+                    seen_revision = latest.coordinates_revision
+                    along = mover._angle_delta(start_pos, self.position_deg(axis, latest)) * 3600.0
+                    along = along * sky_sign if sky_sign else abs(along)
+                    moved_now = (along - achieved) * (direction * sign)
+                    if moved_now >= stop_at:
+                        break  # close enough: stop here, a later pass closes the rest
             moving_s = self._monotonic() - started
             transport.issue_switch_off(device, name, element)
             transport.issue_switch(device, "TELESCOPE_TRACK_STATE", "TRACK_OFF")

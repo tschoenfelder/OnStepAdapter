@@ -476,3 +476,38 @@ def test_a_coarse_dec_step_uses_the_fast_rates_and_lands_on_target(slow_sim, slo
              if w.property == "TELESCOPE_SLEW_RATE"}
     assert rates & {"8", "9"}, rates
     assert elapsed < 40.0, elapsed  # at 48x alone this needs > 50 s
+
+
+@pytest.fixture
+def accelerating_sim():
+    """Manual motion that accelerates like the rig (field incident 56b54f01)."""
+    # The rig publishes status and coordinates only every ~1.5 s.
+    config = SimConfig(speed=1.0, manual_accel_deg_per_s2=1.2, status_period_s=1.5)
+    with SimulatedOnStepServer(config) as sim:
+        yield sim
+
+
+@pytest.fixture
+def accelerating_client(accelerating_sim):
+    from onstep_mock.testing import runtime_config, wait_for_live_status
+    from onstep_adapter import OnStepClient
+
+    accelerating_sim.place(ha_h=-2.0, dec_deg=30.0, parked=False)
+    with OnStepClient(config=runtime_config(accelerating_sim)) as client:
+        wait_for_live_status(client)
+        yield client
+
+
+@pytest.mark.parametrize("degrees", [10.0, 5.0])
+def test_a_coarse_step_on_an_accelerating_mount_lands_on_target(
+    accelerating_sim, accelerating_client, degrees
+):
+    """Field incident 56b54f01: a 0.5 s first pass at the fastest rate covered only 0.14 deg
+    (the mount was still accelerating), the drive took that as the rate, planned an 8 s second
+    pass and moved ~15 deg instead of 10. Each pass must stop at its target from the live
+    position, and a pass may grow at most 3x over the previous one."""
+    dec_before = accelerating_sim.mount.dec_deg
+    result = accelerating_client.mount.move_dec_axis_deg(degrees).wait(timeout=120)
+    moved = abs(accelerating_sim.mount.dec_deg - dec_before)
+    assert result.stop_confirmed
+    assert moved == pytest.approx(degrees, abs=degrees * 0.03), moved
