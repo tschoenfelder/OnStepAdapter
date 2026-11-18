@@ -458,3 +458,21 @@ def test_a_status_gap_after_the_stop_does_not_abort_the_move(onstep_sim, onstep_
     assert result.stop_confirmed
     sent = [w.property for w in onstep_sim.writes[writes:]]
     assert "TELESCOPE_ABORT_MOTION" not in sent
+
+
+def test_a_coarse_dec_step_uses_the_fast_rates_and_lands_on_target(slow_sim, slow_client):
+    """Operator request 2026-11-18: RA/Dec steps of 1, 5 and 20 degrees. At 48x a 20 degree
+    step took ~100 s; the drive now also uses TELESCOPE_SLEW_RATE 8/9 (here 1 and 2.5 deg/s),
+    planning a first pass at one of them with a deliberately high assumed rate."""
+    dec_before, ha_before = slow_sim.mount.dec_deg, slow_sim.mount.ha_h
+    started = time.monotonic()
+    result = slow_client.mount.move_dec_axis_deg(10.0).wait(timeout=120)
+    elapsed = time.monotonic() - started
+
+    assert result.stop_confirmed
+    assert abs(slow_sim.mount.dec_deg - dec_before) == pytest.approx(10.0, abs=10.0 * 0.03)
+    assert slow_sim.mount.ha_h == ha_before  # still a single-axis move
+    rates = {w.values and next(iter(w.values)) for w in slow_sim.writes
+             if w.property == "TELESCOPE_SLEW_RATE"}
+    assert rates & {"8", "9"}, rates
+    assert elapsed < 40.0, elapsed  # at 48x alone this needs > 50 s

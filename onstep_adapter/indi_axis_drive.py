@@ -40,15 +40,21 @@ if TYPE_CHECKING:
     from .indi_axis_motion import Axis, IndiAxisMover
 
 #: OnStep's ``:R0#``..``:R7#`` manual rates as multiples of sidereal (the
-#: ``TELESCOPE_SLEW_RATE`` indices 0..7; 8 and 9 depend on the firmware's
-#: configured maximum and are never used here).
+#: ``TELESCOPE_SLEW_RATE`` indices 0..7).
 NOMINAL_RATE_X = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 20.0, 48.0)
+#: ``TELESCOPE_SLEW_RATE`` 8 and 9 (OnStepX: half of / the full configured maximum slew)
+#: depend on the firmware's configured maximum, so they have no nominal value. A pass at one
+#: that has not been measured yet plans with this deliberately HIGH assumption (deg/s x
+#: 3600), so it undershoots rather than overshoots; later passes use the measured rate.
+#: Needed for coarse steps (operator request 2026-11-18: 1/5/20 degree RA/Dec steps -- at
+#: 48x a 20 degree step took ~100 s).
+ASSUMED_FAST_RATE_ARCSEC_PER_S = {8: 6.0 * 3600.0, 9: 12.0 * 3600.0}
 #: Rates a finite move may use, fastest first.
-DRIVE_RATE_INDICES = (7, 6, 5, 4, 3)
+DRIVE_RATE_INDICES = (9, 8, 7, 6, 5, 4, 3)
 SIDEREAL_ARCSEC_PER_S = 15.041
 #: A pass is planned to last at least this long when a slower rate allows it
 #: (start/stop latency then matters less than the angle moved).
-MIN_PASS_S = 1.0
+MIN_PASS_S = 0.75
 #: A pass never lasts longer than this.
 MAX_PASS_S = 90.0
 MAX_PASSES = 4
@@ -129,14 +135,20 @@ class SingleAxisDrive:
         ratios = [
             rate / (NOMINAL_RATE_X[index] * SIDEREAL_ARCSEC_PER_S)
             for (measured_axis, index), rate in self.measured_rate.items()
-            if measured_axis == axis
+            if measured_axis == axis and index < len(NOMINAL_RATE_X)
         ]
         scale = sum(ratios) / len(ratios) if ratios else 1.0
         choice = None
         for index in DRIVE_RATE_INDICES:
             measured = self.measured_rate.get((axis, index))
-            rate = measured or NOMINAL_RATE_X[index] * SIDEREAL_ARCSEC_PER_S * scale
-            choice = (index, rate, bool(ratios))
+            if index in ASSUMED_FAST_RATE_ARCSEC_PER_S:  # no nominal: measured, or assumed high
+                # A controller whose measured rates run faster than nominal is assumed to run
+                # its fast rates faster too (never slower: the assumption must stay HIGH).
+                rate = measured or ASSUMED_FAST_RATE_ARCSEC_PER_S[index] * max(1.0, scale)
+                choice = (index, rate, measured is not None)
+            else:
+                rate = measured or NOMINAL_RATE_X[index] * SIDEREAL_ARCSEC_PER_S * scale
+                choice = (index, rate, bool(ratios))
             if remaining_arcsec / rate >= MIN_PASS_S:
                 return choice
         assert choice is not None
