@@ -46,6 +46,8 @@ class SimConfig:
     slew_deg_per_s: float = 4.0
     speed: float = 1.0  # scales slew speed and settle times, not guide pulses
     abort_settle_s: float = 1.45
+    #: False: the INDI device starts disconnected, as after an indiserver restart.
+    start_device_connected: bool = True
     auto_track_on_unpark: bool = True
     auto_track_on_goto_arrival: bool = True
     arrival_tolerance_deg: float = 1e-4

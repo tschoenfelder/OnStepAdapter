@@ -511,3 +511,22 @@ def test_a_coarse_step_on_an_accelerating_mount_lands_on_target(
     moved = abs(accelerating_sim.mount.dec_deg - dec_before)
     assert result.stop_confirmed
     assert moved == pytest.approx(degrees, abs=degrees * 0.03), moved
+
+
+def test_connect_connects_a_device_left_disconnected_by_an_indiserver_restart(caplog):
+    """Field diag 4f73ce56: after an indiserver restart the OnStep INDI device was not
+    connected (INDI drivers do not connect by themselves) and connect() refused with
+    "OnStep INDI device is not connected". Operator decision: connect it, and log why."""
+    import logging
+    from onstep_mock.testing import runtime_config, wait_for_live_status
+    from onstep_adapter import OnStepClient
+
+    with SimulatedOnStepServer(SimConfig(speed=20.0, start_device_connected=False)) as sim:
+        with caplog.at_level(logging.WARNING, logger="onstep_adapter.indi_client"):
+            with OnStepClient(config=runtime_config(sim)) as client:
+                wait_for_live_status(client)
+                assert client.mount.get_status().status_live
+        sent = [(w.property, w.values) for w in sim.writes]
+        assert ("CONNECTION", {"CONNECT": "On"}) in sent
+    assert "is not connected (e.g. after an indiserver restart): sending CONNECT" in caplog.text
+    assert "connected by this client" in caplog.text
