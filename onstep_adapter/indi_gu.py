@@ -3,7 +3,22 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 import re
+
+
+GENERAL_ERROR_NAMES = {
+    0: "none",
+    1: "motor_fault",
+    2: "altitude_minimum",
+    3: "limit_sense",
+    4: "declination_limit",
+    5: "azimuth_limit",
+    6: "under_pole_limit",
+    7: "meridian_limit",
+    8: "sync_error",
+    9: "park_error",
+}
 
 
 def decode_gu(value: str) -> dict[str, object]:
@@ -21,6 +36,7 @@ def decode_gu(value: str) -> dict[str, object]:
     slewing = "N" not in flags
     at_home = "H" in flags
     guiding = "G" in flags
+    general_error_code = int(raw[-1])
     pier_side = "east" if "T" in flags else "west" if "W" in flags else None
     if parked:
         motion_state = "parked"
@@ -47,6 +63,10 @@ def decode_gu(value: str) -> dict[str, object]:
         "not_slewing": not slewing,
         "at_home": at_home,
         "guiding": guiding,
+        "general_error_code": general_error_code,
+        "general_error": GENERAL_ERROR_NAMES.get(
+            general_error_code, f"controller_error_{general_error_code}"
+        ),
         "pier_side": pier_side,
         "motion_state": motion_state,
     }
@@ -59,3 +79,31 @@ def local_sidereal_hours(observer_lon: float, now: datetime) -> float:
     julian_days = 2440587.5 + utc.timestamp() / 86400.0
     gmst = 18.697374558 + 24.06570982441908 * (julian_days - 2451545.0)
     return (gmst + observer_lon / 15.0) % 24.0
+
+
+def equatorial_to_horizontal(
+    ra_hours: float,
+    dec_deg: float,
+    observer_lat_deg: float,
+    observer_lon_deg: float,
+    now: datetime,
+) -> tuple[float, float]:
+    """Derive apparent geometric altitude/azimuth from INDI sky coordinates."""
+    hour_angle = math.radians(
+        ((local_sidereal_hours(observer_lon_deg, now) - ra_hours + 12.0) % 24.0 - 12.0)
+        * 15.0
+    )
+    declination = math.radians(dec_deg)
+    latitude = math.radians(observer_lat_deg)
+    sin_altitude = (
+        math.sin(declination) * math.sin(latitude)
+        + math.cos(declination) * math.cos(latitude) * math.cos(hour_angle)
+    )
+    altitude = math.asin(max(-1.0, min(1.0, sin_altitude)))
+    y = -math.sin(hour_angle) * math.cos(declination)
+    x = (
+        math.sin(declination) * math.cos(latitude)
+        - math.cos(declination) * math.sin(latitude) * math.cos(hour_angle)
+    )
+    azimuth = math.atan2(y, x)
+    return math.degrees(altitude), math.degrees(azimuth) % 360.0

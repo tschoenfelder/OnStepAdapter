@@ -17,6 +17,7 @@ def runtime_config(sim: SimulatedOnStepServer, **overrides) -> IndiRuntimeConfig
         observer_alt_m=304.0, flip_request_deg=1.0, tracking_stop_deg=1.75,
         flip_allowance_seconds=120.0, reserve_seconds=30.0,
         safe_meridian_flip_via_home=True, home_motion_enabled=True,
+        park_motion_enabled=True,
         focuser_max_position=50000,
     )
     values.update(overrides)

@@ -57,8 +57,6 @@ def test_equatorial_to_horizontal_dense_grid_against_astropy() -> None:
     print(f"forward cases={len(actual)} worst_error_arcsec={worst_arcsec:.12g}")
     assert len(actual) == 16_020
     assert worst_arcsec < 0.001
-
-
 def test_horizontal_to_equatorial_dense_grid_against_astropy() -> None:
     subject = mover()
     lst_hours = 8.0

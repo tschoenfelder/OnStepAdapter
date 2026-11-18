@@ -1,17 +1,21 @@
-# OnStepAdapter 0.6.6
+# OnStepAdapter 0.7.11
 
 Python 3.13+ access to an OnStep mount and focuser through an existing local
 INDI server and its unchanged `LX200 OnStep` driver. The package is
-`onstep-adapter`; the import is `onstep_adapter`. Version 0.6.6 does not open
+`onstep-adapter`; the import is `onstep_adapter`. Version 0.7.11 does not open
 the controller's serial port, run a daemon, or disconnect other INDI clients.
 
 This is a deliberately restricted INDI release. It provides shared status,
 explicit time/site synchronization, meridian supervision during the client's
 lifetime, an emergency mount stop, and bounded absolute focuser movement.
 General astronomical goto/tracking and HOME/PARK motion remain disabled by
-default. HOME-neutral local axis movements are separately available when
-unparked, stationary, tracking off and fault-free; this gate has not yet
-passed physically.
+default. Healthy terrestrial sessions provide finite 1, 5, and 10 degree
+Axis-1 targets and pole-aware Axis-2 paths while unparked, stationary,
+tracking off and fault-free. Axis-2 travel is accumulated from consecutive
+short coordinate arcs so OnStep's RA/DEC pole transition cannot alias a long
+mechanical path into a short endpoint displacement.
+Short timed RA/DEC nudges are therefore recovery-only controls for an operator
+watching a mount that already reports an OnStep limit or fault.
 Do not install 0.4.0 expecting the direct-serial 0.3.5 API.
 
 ## Install
@@ -19,7 +23,7 @@ Do not install 0.4.0 expecting the direct-serial 0.3.5 API.
 Install the local wheel on the Raspberry (Python 3.13 or newer):
 
 ```bash
-python3 -m pip install ./onstep_adapter-0.6.6-py3-none-any.whl
+python3 -m pip install ./onstep_adapter-0.7.11-py3-none-any.whl
 python3 -c 'import onstep_adapter; print(onstep_adapter.__version__)'
 ```
 
@@ -38,8 +42,9 @@ device `DISCONNECT`, so the driver, mount and other INDI clients stay connected.
 
 Copy [config.indi.example.toml](config.indi.example.toml) to an application-
 owned location and review the observer, meridian, and focuser limits. The
-example deliberately keeps `home_motion_enabled=false` and a conservative
-focuser software ceiling of 50000, even though INDI reports `FOCUS_MAX=100000`.
+example keeps unverified HOME routing disabled, enables physically exercised
+PARK/UNPARK for explicit mode transitions, and uses a conservative focuser
+software ceiling of 50000, even though INDI reports `FOCUS_MAX=100000`.
 The wheel also includes the same template as the package resource
 `onstep_adapter/config.indi.example.toml`.
 
@@ -171,6 +176,92 @@ operations remain disabled by
 the example configuration until their supervised acceptance is complete.
 General `goto()` remains unavailable.
 
+`go_home()` is different from a coordinate target: through the unchanged
+`indi_lx200_OnStep` driver it invokes OnStep's controller HOME operation and
+waits for the raw `H` flag. On the tested Terrans controller this operation
+performs a HOME-sensor search that can pass the logical HOME pose, reverse,
+and approach it again before `H` is asserted. Thus a caller that requests
+STOP -> HOME -> PARK still sends only those two movement requests; additional
+travel before `H` belongs to the controller's HOME procedure. The current
+INDI interface exposes no separate "logical HOME without sensor search"
+operation. Do not replace HOME with an RA/DEC inference: those coordinates are
+logical data and do not prove the mechanical pose.
+
+### Explicit Astronomical And Terrestrial Modes
+
+When `[terrestrial].state_file` is configured, the adapter publishes a shared
+`astronomical`, `terrestrial`, or `unknown` mode through
+`mount.mode_status()` and `mount.get_status().operating_mode`. The state file
+is locked and atomically replaced so local Python clients see one generation.
+It is not an OnStep/INDI property: removing or corrupting it produces
+`unknown`, and terrestrial commands fail closed.
+
+Every mode transition is caller-owned and requires this exact lifecycle:
+
+```python
+from onstep_adapter import IndiOperatingMode, OnStepClient, load_indi_config
+
+config = load_indi_config("~/.config/onstep_adapter/config.toml")
+with OnStepClient(config=config) as client:
+    parked = client.mount.park().wait()  # explicit, even if already PARKED
+    if not parked.confirmed:
+        raise RuntimeError(parked.error)
+    changed = client.mount.set_mode(IndiOperatingMode.TERRESTRIAL)
+    client.mount.unpark()              # explicit; TRACK_OFF is verified
+    client.mount.move_toward_north_horizon(10.0)  # pole-aware Axis-2 path
+```
+
+`park()` reconciles fresh raw OnStep `:GU#` PARKED evidence with standard
+`TELESCOPE_PARK`, requires stationary/non-tracking reports for the configured
+hold time, then grants this client one authorization valid for 30 seconds.
+`set_mode()` consumes it. Authorization is never persisted or inherited by a
+new process, and a concurrent client's mode generation invalidates it. The
+adapter never parks, unparks, enables tracking, or switches mode as a side
+effect of a movement request.
+
+In terrestrial mode, tracking and astronomical guide/coordinate operations
+are refused. `move_toward_north_horizon()` and
+`move_away_from_north_horizon()` execute bounded Axis-2 paths. They sum short
+successive sky arcs instead of comparing only start and end coordinates. This
+is essential at a pole crossing, where OnStep changes RA by about 12 hours and
+logical DEC reverses while mechanical Axis-2 continues in the same direction.
+The configured altitude floor remains authoritative; logical DEC bounds do
+not terminate this pole-crossing path.
+
+`recover_terrestrial_ra(direction, duration_s)` and
+`recover_terrestrial_dec(direction, duration_s)` are separate recovery-only
+operations. They accept east/west or north/south respectively, verify STOP
+before motion, run the corresponding manual-axis switch for at most
+`[terrestrial].ra_recovery_max_seconds`, and verify STOP again in guaranteed
+cleanup. They require terrestrial mode,
+fresh raw status, UNPARKED, tracking off and no active slew or guide pulse.
+Unlike normal movement it intentionally permits an existing OnStep limit or
+fault, because its purpose is operator-directed movement back toward safety.
+It does not require a PARK reference and therefore remains usable after a UI
+restart. Direction and clearance must be chosen under direct observation;
+duration is not an angular promise and the adapter cannot determine which
+direction improves the physical condition.
+
+Healthy terrestrial sessions use `move_terrestrial_ra_deg()` for finite
+fixed-direction Axis-1 motion and the north-horizon methods for pole-aware Axis-2
+paths from 1 through 10 degrees. These require the retained PARK then UNPARK
+session, tracking off, and fault-free feedback. Logical coordinates remain
+controller data rather than independent mechanical encoder measurements, so
+physical travel must remain supervised. Merely being UNPARKED does not select
+recovery, and a failed normal jog is never automatically retried as recovery.
+The final digit of raw `:GU#` is decoded as OnStep's general error. In
+particular, code `6` is an under-pole limit: the adapter stops and reports that
+guard immediately even if the calculated sky altitude is otherwise allowed.
+Altitude clearance and the controller's mechanical Axis-1 guard are separate
+safety conditions.
+
+The tested `indi_lx200_OnStep` driver does not publish `HORIZONTAL_COORD`.
+When that optional property is absent, the adapter derives ALT/AZ from the
+latest INDI RA/DEC, Raspberry time, and configured observer location. The
+verified stationary UNPARK position anchors the first operator-requested step;
+motion and settling still require new RA/DEC telemetry. Derived ALT/AZ and the
+pole branch remain logical safety estimates, not independent axis sensors.
+
 `enable_tracking()` uses INDI `TRACK_ON` and requires two fresh tracking
 reports after a real transition. The default
 `tracking_authority_policy="strict"` requires this client's accepted
@@ -183,8 +274,10 @@ enforced. A newly connected client never stops or reissues an existing track
 merely because its own authority is absent. Finite
 `move_ra_axis_deg()` / `move_dec_axis_deg()` take degrees. The compatibility
 `move_ra(..., mode="manual")` / `move_dec(..., mode="manual")` methods take
-arcseconds. Both use finite INDI targets.
-They support 30 arcseconds through 15 degrees and require fresh unparked,
+arcseconds. Both drive only the requested OnStep axis with a bounded INDI
+manual-motion sequence, then verify STOP and measured arrival.
+They are available only in astronomical operating mode, support 30 arcseconds
+through 15 degrees, and require fresh unparked,
 stationary, non-tracking and fault-free state,
 but neither HOME nor clock authority. Their 1/5/10/15-degree mock cases pass;
 the supervised mount test has **not** passed. Requests below 30″ are refused,
@@ -206,16 +299,27 @@ altitude before sending the finite target and refuses lower endpoints. A
 HOME-neutral terrestrial move without astronomical time authority retains
 the DEC gate because HOME coordinates are diagnostic rather than sky truth.
 
-The installed driver appears to publish OnStep's `H` HOME flag in raw status,
-but this has not been physically checked through INDI on this rig. Local
-axis-angle movement does not depend on HOME. The final operator-approved
-HOME -> PARK cleanup will separately validate `H` and remains outstanding.
+The isolated 2026-10-28 investigation physically confirmed the installed
+driver's raw `H` HOME status and a strict `HOME -> PARK` final route. PARK was
+not requested until two fresh stationary `H` reports had arrived; completion
+ended at raw `nNPET260`. Current release feature gates remain unchanged until
+the production implementation and regression tests conform to the behavioral
+specification. Local axis-angle movement does not depend on HOME.
+
+The complete relative horizontal target contract is now specified for future
+implementation: `move_alt_deg()` preserves starting AZ, `move_az_deg()`
+preserves starting ALT, and combined moves calculate one Earth-fixed target.
+It includes current-time RA/DEC transformation, path monitoring, zenith and
+pole exclusions, same-pier enforcement, arrival tracking suppression and
+bounded correction attempts. Version 0.7.11 does not yet expose these methods.
 
 The supervised [axis-angle procedure](docs/SDK.md#ra-and-dec-axis-angle-test)
 tests paired +1/-1, +5/-5 and +10/-10 degree movements on both axes before
 0.4.0 is considered complete. It requires line of sight.
 
-See the [SDK guide](docs/SDK.md), [OnStepX mock](docs/MOCK.md), [requirements](docs/REQUIREMENTS.md),
+See the [behavioral specification](docs/ONSTEP_ADAPTER_SPECIFICATION.md),
+[SDK guide](docs/SDK.md), [requirements](docs/REQUIREMENTS.md),
+[OnStepX mock](docs/MOCK.md),
 [INDI architecture](docs/INDI_ARCHITECTURE.md), and
 [hardware inventory](docs/INDI_RASPBERRY_INVENTORY.md). The previous
 [0.3.5 release](https://github.com/tschoenfelder/OnStepAdapter/releases/tag/v0.3.5)

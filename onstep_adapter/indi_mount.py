@@ -33,9 +33,62 @@ class IndiMount:
         return self._client.go_home()
 
     @_traced
-    def park(self):
+    def park(self, *, operator_confirmed_existing_park: bool = False):
         """Start the move to the stored PARK; returns a ``MotionHandle`` at once."""
-        return self._client.park()
+        return self._client.park(
+            operator_confirmed_existing_park=operator_confirmed_existing_park
+        )
+
+    def mode_status(self):
+        return self._client.mode_status()
+
+    def set_mode(self, target):
+        """Consume a fresh explicit-PARK authorization and change mode only."""
+        return self._client.set_mode(target)
+
+    def move_toward_north_horizon(self, step_deg: float | None = None, *, timeout_s=45.0):
+        return self._client.move_toward_north_horizon(step_deg, timeout_s=timeout_s)
+
+    def move_away_from_north_horizon(self, step_deg: float | None = None, *, timeout_s=45.0):
+        return self._client.move_away_from_north_horizon(step_deg, timeout_s=timeout_s)
+
+    def move_terrestrial_ra_axis(self, offset_deg: float, *, timeout_s=45.0):
+        """Bounded signed Axis-1 jog; positive westward, negative eastward."""
+        return self._client.move_terrestrial_ra_axis(
+            offset_deg, timeout_s=timeout_s
+        )
+
+    def recover_terrestrial_ra(self, direction: str, duration_s: float):
+        """Run one operator-observed, time-bounded Axis-1 recovery nudge."""
+        return self._client.recover_terrestrial_ra(direction, duration_s)
+
+    def recover_terrestrial_dec(self, direction: str, duration_s: float):
+        """Run one operator-observed, time-bounded Axis-2 recovery nudge."""
+        return self._client.recover_terrestrial_dec(direction, duration_s)
+
+    def move_terrestrial_ra_timed(self, direction: str, duration_s: float):
+        """Run one normal timed Axis-1 jog in an established terrestrial session."""
+        return self._client.move_terrestrial_ra_timed(direction, duration_s)
+
+    def move_terrestrial_dec_timed(self, direction: str, duration_s: float):
+        """Run one normal timed Axis-2 jog in an established terrestrial session."""
+        return self._client.move_terrestrial_dec_timed(direction, duration_s)
+
+    def move_terrestrial_ra_deg(
+        self, offset_deg: float, *, timeout_s: float = 30.0,
+    ):
+        """Finite same-pier RA jog after this client established PARK -> UNPARK."""
+        return self._client.move_terrestrial_axis_deg(
+            "ra", offset_deg, timeout_s=timeout_s,
+        )
+
+    def move_terrestrial_dec_deg(
+        self, offset_deg: float, *, timeout_s: float = 30.0,
+    ):
+        """Finite same-pier DEC jog after this client established PARK -> UNPARK."""
+        return self._client.move_terrestrial_axis_deg(
+            "dec", offset_deg, timeout_s=timeout_s,
+        )
 
     @_traced
     def reconnect_device(self, *, timeout: float = 20.0):

@@ -9,4 +9,6 @@ dist/
 .venv/
 venv/
 onstep_firmware_safeguard_proof.json
+.investigation-tmp/
+investigation/evidence/
 

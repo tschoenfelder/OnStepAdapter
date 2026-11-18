@@ -372,7 +372,11 @@ class IndiAxisMover:
                 # A DEC move that starts outside the bound (HOME is DEC +90)
                 # may still run when it only brings DEC closer to the bound:
                 # that is the DEC-first move RA needs at HOME.
-                raise RuntimeError("Projected DEC leaves the configured movement bound")
+                raise RuntimeError(
+                    f"Projected DEC target {target_dec:+.3f} deg from "
+                    f"{before.dec_deg:+.3f} deg is outside configured bounds "
+                    f"{self.min_dec_deg:+.3f}..{self.max_dec_deg:+.3f} deg"
+                )
             target_alt, _ = self._horizontal_from_equatorial(
                 target_ha_deg, target_dec
             )

@@ -52,4 +52,3 @@ def test_native_altaz_goto_propagates_controller_rejection(
     mount, _ = _mount_with_replies(*replies)
     with pytest.raises(RuntimeError, match=message):
         mount.goto_altaz(45.0, 90.0)
-

@@ -12,7 +12,7 @@ All methods are called with the owning server's lock held.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 
 from onstep_adapter.indi_gu import local_sidereal_hours
@@ -126,6 +126,10 @@ class VirtualMount:
     guide_dec_deg_per_s: float = 0.0
     fault: str | None = None
     events: list[str] = field(default_factory=list)
+    utc_origin: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    elapsed_s: float = 0.0
 
     @classmethod
     def create(cls, config: SimConfig) -> VirtualMount:
@@ -136,9 +140,8 @@ class VirtualMount:
         return mount
 
     # ---- time -----------------------------------------------------------
-    @staticmethod
-    def utc_now() -> datetime:
-        return datetime.now(timezone.utc)
+    def utc_now(self) -> datetime:
+        return self.utc_origin + timedelta(seconds=self.elapsed_s)
 
     def lst_h(self) -> float:
         return local_sidereal_hours(self.config.observer_lon, self.utc_now())
@@ -274,6 +277,7 @@ class VirtualMount:
     # ---- motion -------------------------------------------------------------
     def tick(self, dt: float, now: float) -> bool:
         """Advance the pose by dt seconds; return True when a state edge occurred."""
+        self.elapsed_s += dt
         edge = False
         if self.tracking:
             self.ha_h = wrap_hours(self.ha_h + dt * SIDEREAL_RATE / 3600.0)

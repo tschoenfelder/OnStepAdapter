@@ -141,7 +141,7 @@ class ConfigTraceTests(unittest.TestCase):
             config_path.write_text(
                 example.replace(
                     '# path = "~/.local/state/onstep_adapter/trace-{date}.jsonl"',
-                    f'path = "{folder}/trace-{{utc}}.jsonl"',
+                    f'path = "{Path(folder).as_posix()}/trace-{{utc}}.jsonl"',
                 ),
                 encoding="utf-8",
             )
@@ -161,7 +161,7 @@ class ConfigTraceTests(unittest.TestCase):
             config_path.write_text(
                 example.replace(
                     '# path = "~/.local/state/onstep_adapter/trace-{date}.jsonl"',
-                    f'path = "{folder}/trace-{{date}}.jsonl"',
+                    f'path = "{Path(folder).as_posix()}/trace-{{date}}.jsonl"',
                 ),
                 encoding="utf-8",
             )
@@ -181,8 +181,8 @@ class ConfigTraceTests(unittest.TestCase):
         self.assertIsNone(load_indi_config("config.indi.example.toml").trace_path)
 
 
-def rec(seq, t, kind, **fields):
-    return {"seq": seq, "t": t, "thread": "main", "type": kind, **fields}
+def rec(seq, t, record_type, **fields):
+    return {"seq": seq, "t": t, "thread": "main", "type": record_type, **fields}
 
 
 def status(seq, t, raw):

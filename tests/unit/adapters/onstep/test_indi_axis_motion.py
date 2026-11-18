@@ -250,7 +250,11 @@ class IndiAxisMotionTests(unittest.TestCase):
         refusing, fake, stops = self.make_mover([snapshot(
             ha=0.0, ra=ra, dec=second[1],
         )])
-        with self.assertRaisesRegex(RuntimeError, "DEC leaves"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"Projected DEC target \+93\.933 deg from \+78\.933 deg is outside "
+            r"configured bounds -80\.000\.\.\+80\.000 deg",
+        ):
             refusing.move("dec", -15.0)
         self.assertEqual(fake.commands, [])
         self.assertEqual(stops, [])
@@ -273,7 +277,7 @@ class IndiAxisMotionTests(unittest.TestCase):
         for dec, offset in ((79.0, -5.0), (-79.0, 5.0)):
             with self.subTest(dec=dec, offset=offset):
                 mover, fake, stops = self.make_mover([snapshot(dec=dec)])
-                with self.assertRaisesRegex(RuntimeError, "DEC leaves"):
+                with self.assertRaisesRegex(RuntimeError, "Projected DEC target"):
                     mover.move("dec", offset)
                 self.assertEqual(fake.commands, [])
                 self.assertEqual(stops, [])

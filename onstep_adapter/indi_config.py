@@ -23,10 +23,20 @@ class IndiRuntimeConfig:
     safe_meridian_flip_via_home: bool
     focuser_max_position: int | None = None
     home_motion_enabled: bool = False
+    park_motion_enabled: bool = False
     tracking_authority_policy: str = "strict"
     movement_min_alt_deg: float = -2.0
     movement_min_dec_deg: float = -80.0
     movement_max_dec_deg: float = 80.0
+    mode_state_path: str | None = None
+    terrestrial_step_deg: float = 10.0
+    terrestrial_max_step_deg: float = 10.0
+    terrestrial_horizon_margin_deg: float = 0.0
+    terrestrial_brake_lead_deg: float = 0.5
+    terrestrial_stop_hold_seconds: float = 3.0
+    terrestrial_slew_rate_element: str = "9"
+    terrestrial_ra_recovery_max_seconds: float = 2.0
+    terrestrial_stall_timeout_seconds: float = 3.0
     trace_path: str | None = None
 
 
@@ -39,6 +49,7 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         observer = data["observer"]
         meridian = data["meridian"]
         movement = data.get("movement", {})
+        terrestrial = data.get("terrestrial", {})
         result = IndiRuntimeConfig(
             host=str(indi["host"]),
             port=int(indi["port"]),
@@ -56,12 +67,37 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
                 if "focuser" in data and "max_position" in data["focuser"] else None
             ),
             home_motion_enabled=indi.get("home_motion_enabled", False),
+            park_motion_enabled=indi.get("park_motion_enabled", False),
             tracking_authority_policy=str(
                 indi.get("tracking_authority_policy", "strict")
             ),
             movement_min_alt_deg=float(movement.get("min_alt_deg", -2.0)),
             movement_min_dec_deg=float(movement.get("min_dec_deg", -80.0)),
             movement_max_dec_deg=float(movement.get("max_dec_deg", 80.0)),
+            mode_state_path=(
+                str(Path(terrestrial["state_file"]).expanduser())
+                if "state_file" in terrestrial else None
+            ),
+            terrestrial_step_deg=float(terrestrial.get("step_deg", 10.0)),
+            terrestrial_max_step_deg=float(terrestrial.get("max_step_deg", 10.0)),
+            terrestrial_horizon_margin_deg=float(
+                terrestrial.get("horizon_margin_deg", 0.0)
+            ),
+            terrestrial_brake_lead_deg=float(
+                terrestrial.get("brake_lead_deg", 0.5)
+            ),
+            terrestrial_stop_hold_seconds=float(
+                terrestrial.get("stop_hold_seconds", 3.0)
+            ),
+            terrestrial_slew_rate_element=str(
+                terrestrial.get("slew_rate_element", "9")
+            ),
+            terrestrial_ra_recovery_max_seconds=float(
+                terrestrial.get("ra_recovery_max_seconds", 2.0)
+            ),
+            terrestrial_stall_timeout_seconds=float(
+                terrestrial.get("stall_timeout_seconds", 3.0)
+            ),
             trace_path=(
                 str(data["trace"]["path"])
                 if "trace" in data and data["trace"].get("path") else None
@@ -75,6 +111,8 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         raise ValueError("safe_meridian_flip_via_home must be boolean")
     if not isinstance(result.home_motion_enabled, bool):
         raise ValueError("home_motion_enabled must be boolean")
+    if not isinstance(result.park_motion_enabled, bool):
+        raise ValueError("park_motion_enabled must be boolean")
     if result.tracking_authority_policy not in {"strict", "controller_managed"}:
         raise ValueError(
             "tracking_authority_policy must be 'strict' or 'controller_managed'"
@@ -90,6 +128,13 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         result.movement_min_alt_deg,
         result.movement_min_dec_deg,
         result.movement_max_dec_deg,
+        result.terrestrial_step_deg,
+        result.terrestrial_max_step_deg,
+        result.terrestrial_horizon_margin_deg,
+        result.terrestrial_brake_lead_deg,
+        result.terrestrial_stop_hold_seconds,
+        result.terrestrial_ra_recovery_max_seconds,
+        result.terrestrial_stall_timeout_seconds,
     )
     if not all(math.isfinite(value) for value in numeric):
         raise ValueError("INDI configuration numeric values must be finite")
@@ -110,4 +155,18 @@ def load_indi_config(path: str | Path) -> IndiRuntimeConfig:
         raise ValueError(
             "Movement DEC limits must satisfy -90 <= min_dec < max_dec <= 90"
         )
+    if not 0 < result.terrestrial_step_deg <= result.terrestrial_max_step_deg <= 30:
+        raise ValueError("Terrestrial steps must satisfy 0 < step <= max_step <= 30 degrees")
+    if not 0 <= result.terrestrial_horizon_margin_deg <= 20:
+        raise ValueError("Terrestrial horizon margin must be within 0..20 degrees")
+    if not 0 <= result.terrestrial_brake_lead_deg < result.terrestrial_max_step_deg:
+        raise ValueError("Terrestrial brake lead must be non-negative and below max step")
+    if not 0 <= result.terrestrial_stop_hold_seconds <= 30:
+        raise ValueError("Terrestrial stop hold must be within 0..30 seconds")
+    if not result.terrestrial_slew_rate_element:
+        raise ValueError("Terrestrial slew-rate element must not be empty")
+    if not 0.1 <= result.terrestrial_ra_recovery_max_seconds <= 5.0:
+        raise ValueError("RA recovery maximum must be within 0.1..5 seconds")
+    if not 0.5 <= result.terrestrial_stall_timeout_seconds <= 10.0:
+        raise ValueError("Terrestrial stall timeout must be within 0.5..10 seconds")
     return result
