@@ -23,6 +23,9 @@ MAX_AXIS_MOVE_DEG = 15.0
 #: Sidereal seconds per solar second: how fast the published RA of a
 #: stationary (tracking-off) mount grows.
 SIDEREAL_PER_SOLAR = 1.00273790935
+#: How long OnStep Status may stay silent right after motion commands before it counts as a
+#: fault (`IndiAxisMover.check_allowing_status_gap`; field incident e515713a measured 3.1 s).
+STATUS_GAP_GRACE_MS = 8000.0
 LOGGER = logging.getLogger(__name__)
 
 #: Why an RA-axis move is refused before the DEC axis has moved (see
@@ -131,6 +134,13 @@ class IndiAxisMover:
         if axis == "ra" and not self._ra_defined:
             raise RaAxisUndefinedError()
 
+    #: The blockers `_check(moving=True, require_fresh_coordinates=False)` refuses on.
+    _FORBIDDEN_IN_MOTION = frozenset({
+        "indi_device_disconnected", "onstep_status_not_fresh", "onstep_status_alert",
+        "onstep_status_unavailable", "onstep_limit_or_park_fault", "onstep_reported_error",
+        "pier_side_conflict", "pier_side_unknown",
+    })
+
     @staticmethod
     def _check(
         snapshot: IndiMountSnapshot, *, moving: bool = False,
@@ -166,6 +176,29 @@ class IndiAxisMover:
                 "Local axis motion requires fresh unparked, stationary, "
                 "non-tracking and fault-free state"
             )
+
+    def check_allowing_status_gap(self, snapshot: IndiMountSnapshot) -> bool:
+        """The in-motion safety check, but a SHORT gap in OnStep Status is a wait, not a fault.
+
+        Field incident e515713a: after a stop the real lx200_OnStep driver publishes no
+        OnStep Status for 2.6-3.1 s while it works through the stop and TRACK_OFF commands;
+        the 3 s freshness limit then tripped and the stop confirmation sent an emergency
+        ABORT although nothing was wrong. Returns True when `snapshot` passed the full check,
+        False when the only problem is OnStep Status older than the freshness limit but within
+        `STATUS_GAP_GRACE_MS` (the caller waits for the next sample). Every other blocker, and
+        a gap longer than the grace, still raises as before.
+        """
+        try:
+            self._check(snapshot, moving=True, require_fresh_coordinates=False)
+            return True
+        except RuntimeError:
+            age = snapshot.status_age_ms
+            only_stale = set(snapshot.blockers) & self._FORBIDDEN_IN_MOTION == {
+                "onstep_status_not_fresh"
+            }
+            if only_stale and age is not None and age <= STATUS_GAP_GRACE_MS:
+                return False
+            raise
 
     def _dec_outside_bound(self, dec_deg: float) -> float:
         """How far ``dec_deg`` lies outside the DEC bound (0 inside it)."""

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.13 - Unreleased
+
+- A short gap in `OnStep Status` right after motion commands is a wait, not a
+  fault (`IndiAxisMover.check_allowing_status_gap`, up to `STATUS_GAP_GRACE_MS`
+  = 8 s). Field incident e515713a: after a stop the real lx200_OnStep driver
+  published no status for 2.6-3.1 s while it worked through the stop and
+  TRACK_OFF; the 3 s freshness limit fired during the stop confirmation and an
+  emergency ABORT was sent although nothing was wrong. Applies to the single-axis
+  drive (in motion and while confirming the stop) and to the jog's stop
+  confirmation, whose deadline grows from 5 s to 15 s. Every other blocker, and
+  a longer gap, still stops at once.
+
 ## 0.7.12 - Unreleased
 
 - `reconnect_device()` no longer reports a driver that reconnects by itself as a

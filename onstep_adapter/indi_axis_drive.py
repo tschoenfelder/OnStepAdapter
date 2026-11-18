@@ -214,7 +214,8 @@ class SingleAxisDrive:
                         requested,
                     ),
                 )
-                mover._check(latest, moving=True, require_fresh_coordinates=False)
+                if not mover.check_allowing_status_gap(latest):
+                    continue  # a short status gap while the driver is busy: next sample
                 if latest.pier_side != before.pier_side:
                     raise RuntimeError("Pier side changed during an axis move")
                 if self._leaves_bound(before, latest):
@@ -278,13 +279,16 @@ class SingleAxisDrive:
     ) -> IndiMountSnapshot:
         stopped_polls = 0
         last_revision = latest.status_revision
-        deadline = self._monotonic() + 5.0
+        # Two fresh stationary samples at the driver's ~1.5 s cadence after a status gap of
+        # up to STATUS_GAP_GRACE_MS (field incident e515713a: 3.1 s) need more than 5 s.
+        deadline = self._monotonic() + 15.0
         while stopped_polls < 2:
             if self._monotonic() >= deadline:
                 raise TimeoutError("Axis move stop was not confirmed")
             pause(max(poll_s, 0.15))
             sample = self.mover.observe()
-            self.mover._check(sample, moving=True, require_fresh_coordinates=False)
+            if not self.mover.check_allowing_status_gap(sample):
+                continue
             if sample.pier_side != before.pier_side:
                 raise RuntimeError("Pier side changed after an axis move")
             if sample.status_revision <= last_revision:
