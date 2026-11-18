@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.14 - Unreleased
+
+- Finite single-axis moves may use `TELESCOPE_SLEW_RATE` 8 and 9 (OnStepX: half of
+  and the full configured maximum slew) for coarse steps. Operator request: RA/Dec
+  steps of 1, 5 and 20 degrees; at 48x a 20 degree step took about 100 s. These
+  rates have no nominal value, so a pass at one that has not been measured yet
+  plans with a deliberately high assumption (6 and 12 deg/s) and undershoots;
+  later passes use the measured rate; on a controller whose measured rates run
+  faster than nominal, the assumption scales up too. `MIN_PASS_S` drops from
+  1.0 s to 0.75 s.
+
 ## 0.7.13 - Unreleased
 
 - A short gap in `OnStep Status` right after motion commands is a wait, not a
