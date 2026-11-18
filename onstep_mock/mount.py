@@ -55,6 +55,10 @@ class SimConfig:
     focuser_steps_per_s: float = 2000.0
     status_period_s: float = 0.25
     tick_s: float = 0.02
+    #: Manual-motion acceleration and braking (deg/s^2 at speed 1); 0 = instant (the default).
+    #: Field incident 56b54f01: the real rig needed ~1.2 deg/s^2 to reach ~1.8 deg/s at the
+    #: fastest rate, so a 0.5 s pass covered only 0.14 deg.
+    manual_accel_deg_per_s2: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,12 @@ class VirtualMount:
     #: How NORTH changes the published DEC after leaving the pole (None: from the pier side).
     ns_dec_sign: float | None = None
     manual_we: int = 0  # +1 west (HA up), -1 east
+    #: Manual motion with acceleration: the current speed and the last direction per axis
+    #: (kept while braking after the direction switched off).
+    manual_ns_speed: float = 0.0
+    manual_we_speed: float = 0.0
+    manual_ns_last: int = 0
+    manual_we_last: int = 0
     slew_rate: int = 6
     guiding_until: float = 0.0
     guide_ha_deg_per_s: float = 0.0
@@ -240,13 +250,15 @@ class VirtualMount:
             return "manual motion refused while parked or faulted"
         if axis == "ns":
             self.manual_ns = direction
+            self.manual_ns_last = direction or self.manual_ns_last
         else:
             self.manual_we = direction
+            self.manual_we_last = direction or self.manual_we_last
         if self.manual_ns or self.manual_we:
             if self.motion in {"IDLE", "MANUAL"}:
                 self.motion = "MANUAL"
                 self.at_home = False
-        elif self.motion == "MANUAL":
+        elif self.motion == "MANUAL" and not self.config.manual_accel_deg_per_s2:
             self.motion = "IDLE"
         return None
 
@@ -287,6 +299,8 @@ class VirtualMount:
         if self.motion == "STOPPING" and now >= self.stop_at:
             self.motion = "IDLE"
             edge = True
+        elif self.motion == "MANUAL" and self.config.manual_accel_deg_per_s2:
+            edge = self._step_manual_with_acceleration(dt)
         elif self.motion == "MANUAL":
             step = RATE_MULTIPLIERS[self.slew_rate] * SIDEREAL_DEG_PER_S * dt * self.config.speed
             # OnStep's NORTH is a mechanical direction: on the real rig it lowers the published
@@ -304,6 +318,34 @@ class VirtualMount:
         elif self.motion == "SLEWING":
             edge = self._step_goto(dt, now)
         return edge
+
+    def _step_manual_with_acceleration(self, dt: float) -> bool:
+        """Manual motion that ramps up to the selected rate and brakes after it is switched
+        off (`SimConfig.manual_accel_deg_per_s2`); IDLE once both axes have stopped."""
+        cruise = RATE_MULTIPLIERS[self.slew_rate] * SIDEREAL_DEG_PER_S * self.config.speed
+        dv = self.config.manual_accel_deg_per_s2 * self.config.speed * dt
+
+        def ramp(speed: float, on: bool) -> float:
+            target = cruise if on else 0.0
+            return min(target, speed + dv) if speed < target else max(target, speed - dv)
+
+        self.manual_ns_speed = ramp(self.manual_ns_speed, bool(self.manual_ns))
+        self.manual_we_speed = ramp(self.manual_we_speed, bool(self.manual_we))
+        if self.manual_ns_last and self.dec_deg >= 90.0:
+            self.ns_dec_sign = -float(self.manual_ns_last)
+        ns_sign = self.ns_dec_sign
+        if ns_sign is None:
+            ns_sign = -1.0 if self.pier_side == "east" else 1.0
+        self.dec_deg = max(
+            -90.0, min(90.0, self.dec_deg + ns_sign * self.manual_ns_last * self.manual_ns_speed * dt)
+        )
+        self.ha_h = wrap_hours(self.ha_h + self.manual_we_last * self.manual_we_speed * dt / 15.0)
+        if not (self.manual_ns or self.manual_we) and not (
+            self.manual_ns_speed or self.manual_we_speed
+        ):
+            self.motion = "IDLE"
+            return True
+        return False
 
     def _goal(self) -> tuple[float, float, str]:
         if self.target_kind == "home":
