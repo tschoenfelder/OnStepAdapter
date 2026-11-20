@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.23 - Unreleased
+
+- A 1 deg step in ~3 s. Field capture 2c63af9f (2026-11-20): OnStep starts the axis
+  0.3-0.6 s after On, varying step to step, so identical 1.39 s runs landed at 0.93 and
+  1.06 deg and the 1.5 % window then often added a 3-4 s correction pass; and after Off the
+  driver reported every 0.77-1.5 s, so two equal readings came ~3.3 s after Off although the
+  axis rested after ~1.3 s. Now:
+  - a step accepts up to `LANDING_MIN_ARCSEC` (0.06 deg, never more than 10 % of it);
+  - one fresh reading taken `REST_COAST_FACTOR` (1.2) x the expected coast + `REST_MARGIN_S`
+    (0.3 s) after Off proves rest on its own (two equal readings still do too).
+
 ## 0.7.22 - Unreleased
 
 - Quicker small steps. Field capture 9e7fd012 (2026-11-20): with 0.7.21 every 1 deg step
