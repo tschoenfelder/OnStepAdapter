@@ -473,14 +473,24 @@ class DecFirstTests(unittest.TestCase):
         )
         return mover, fake, stops
 
-    def test_ra_move_right_after_connecting_is_refused_unsent(self):
-        mover, fake, stops = self.make_mover([snapshot()])
+    def test_ra_move_right_after_connecting_near_the_pole_is_refused_unsent(self):
+        mover, fake, stops = self.make_mover([snapshot(dec=86.0)])
         self.assertFalse(mover.ra_axis_defined)
         with self.assertRaises(RaAxisUndefinedError) as raised:
             mover.move("ra", 1.0)
         self.assertEqual(str(raised.exception), RA_UNDEFINED_AT_HOME)
         self.assertIsInstance(raised.exception, RuntimeError)
         self.assertEqual(fake.commands, [])
+        self.assertEqual(stops, [])
+
+    @patch("onstep_adapter.indi_axis_motion.time.sleep")
+    def test_ra_is_defined_right_after_unparking_away_from_the_pole(self, unused_sleep):
+        """Operator (2026-11-20): DEC first is needed only at or close to the pole; after
+        unparking at PARK (DEC ~52) RA may be used at once."""
+        mover, _, stops = self.make_mover(ra_samples(10, dec=52.0))
+        result = mover.move("ra", 1.0)
+        self.assertAlmostEqual(result.measured_deg, 1.0)
+        self.assertTrue(mover.ra_axis_defined)
         self.assertEqual(stops, [])
 
     def test_require_ra_defined_refuses_before_any_reading(self):
@@ -521,7 +531,7 @@ class DecFirstTests(unittest.TestCase):
 
     @patch("onstep_adapter.indi_axis_motion.time.sleep")
     def test_mark_ra_undefined_requires_dec_first_again(self, unused_sleep):
-        mover, fake, _ = self.make_mover(dec_samples(1) + [snapshot(revision=10)])
+        mover, fake, _ = self.make_mover(dec_samples(1) + [snapshot(revision=10, dec=88.0)])
         mover.move("dec", 1.0)
         mover.mark_ra_undefined()
         sent = len(fake.commands)

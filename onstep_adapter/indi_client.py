@@ -349,7 +349,7 @@ class OnStepIndiClient:
             axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s, mode=mode
         )
         mover = self._axis_mover
-        mover.require_ra_defined(axis)
+        mover.require_ra_defined(axis, self._snapshot_or_none())
 
         def run(token: MotionToken) -> IndiAxisMoveResult:
             return mover.move(
@@ -378,7 +378,7 @@ class OnStepIndiClient:
             axis, direction, rate_index=rate_index, lease_s=lease_s,
             max_duration_s=max_duration_s, poll_s=poll_s,
         )
-        self._axis_mover.require_ra_defined(axis)
+        self._axis_mover.require_ra_defined(axis, self._snapshot_or_none())
         jogger = IndiAxisJogger(
             self._transport, self.device, self._axis_mover, self.observe_mount
         )
@@ -756,12 +756,26 @@ class OnStepIndiClient:
 
     @property
     def ra_axis_defined(self) -> bool:
-        """False after connecting and after HOME until a DEC axis move completed.
+        """False at HOME and within `RA_UNDEFINED_POLE_DISTANCE_DEG` of a pole until a DEC
+        axis move completed; True elsewhere, e.g. right after unparking at PARK.
 
         RA-axis moves are refused while this is False; move DEC first.
         """
         mover = self._axis_mover
-        return mover is not None and mover.ra_axis_defined
+        if mover is None:
+            return False
+        if mover.ra_axis_defined:
+            return True
+        try:
+            return mover.ra_defined_at(self.observe_mount())
+        except Exception:  # noqa: BLE001 -- unknown state: keep the rule
+            return False
+
+    def _snapshot_or_none(self) -> IndiMountSnapshot | None:
+        try:
+            return self.observe_mount()
+        except Exception:  # noqa: BLE001 -- no reading: the RA rule stays strict
+            return None
 
     def _mark_ra_undefined(self) -> None:
         if self._axis_mover is not None:

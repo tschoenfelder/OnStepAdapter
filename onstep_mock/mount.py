@@ -189,6 +189,8 @@ class VirtualMount:
     manual_we_speed: float = 0.0
     #: Motion-switch changes waiting for `SimConfig.manual_*_latency_s`: (apply at, axis, dir).
     pending_manual: list[tuple[float, str, int]] = field(default_factory=list)
+    #: (elapsed s, HA h, DEC deg) of the last ticks, for `published_pose`'s lag.
+    pose_history: list[tuple[float, float, float]] = field(default_factory=list)
     manual_ns_last: int = 0
     manual_we_last: int = 0
     slew_rate: int = 6
@@ -224,16 +226,17 @@ class VirtualMount:
         return (self.lst_h() - self.ha_h) % 24.0
 
     def published_pose(self) -> tuple[float, float]:
-        """(RA hours, DEC deg) as the driver publishes them: `SimConfig.coordinate_lag_s` old
-        while a manual motion moves the axes."""
+        """(RA hours, DEC deg) as the driver publishes them: where the axes were
+        `SimConfig.coordinate_lag_s` ago while a manual motion moves them."""
         lag = self.config.coordinate_lag_s / self.config.speed
-        if not lag or self.motion != "MANUAL":
+        if not lag or self.motion != "MANUAL" or not self.pose_history:
             return self.ra_h(), self.dec_deg
-        ns_sign = self.ns_dec_sign
-        if ns_sign is None:
-            ns_sign = -1.0 if self.pier_side == "east" else 1.0
-        dec = self.dec_deg - ns_sign * self.manual_ns_speed * lag
-        ha = wrap_hours(self.ha_h - self.manual_we_speed * lag / 15.0)
+        at = self.elapsed_s - lag
+        ha, dec = self.ha_h, self.dec_deg
+        for t, past_ha, past_dec in reversed(self.pose_history):
+            ha, dec = past_ha, past_dec
+            if t <= at:
+                break
         return (self.lst_h() - ha) % 24.0, dec
 
     # ---- derived state ----------------------------------------------------
@@ -404,6 +407,11 @@ class VirtualMount:
         """Advance the pose by dt seconds; return True when a state edge occurred."""
         self.elapsed_s += dt
         edge = False
+        if self.config.coordinate_lag_s:
+            self.pose_history.append((self.elapsed_s, self.ha_h, self.dec_deg))
+            horizon = self.elapsed_s - 2.0 * self.config.coordinate_lag_s / self.config.speed
+            while self.pose_history and self.pose_history[0][0] < horizon:
+                self.pose_history.pop(0)
         if self.pending_manual:
             due = [item for item in self.pending_manual if item[0] <= now]
             self.pending_manual = [item for item in self.pending_manual if item[0] > now]

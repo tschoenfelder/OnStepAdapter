@@ -82,9 +82,10 @@ def test_axis_move_ends_on_target_without_tracking(rig_sim, rig_client):
     assert mount.pier_side == "west"
 
 
-def test_first_move_after_connecting_must_be_dec(rig_sim, rig_client):
-    rig_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
-    time.sleep(0.4)
+def test_first_move_after_connecting_near_the_pole_must_be_dec(rig_sim, rig_client):
+    """DEC first only at HOME or within 5 deg of a pole (operator, 2026-11-20)."""
+    rig_sim.place(ha_h=-2.0, dec_deg=87.0, parked=False)
+    time.sleep(2.0)  # the rig model publishes every 1.5 s while idle
     writes = len(rig_sim.writes)
     assert not rig_client.mount.ra_axis_defined
 
@@ -93,14 +94,11 @@ def test_first_move_after_connecting_must_be_dec(rig_sim, rig_client):
     assert rig_client.active_motion is None
     assert len(rig_sim.writes) == writes
 
+    # Beyond the +-80 deg DEC bound a DEC move must lead back inside; the mock's NORTH raises
+    # DEC at pier side west, as an earlier DEC move would have measured.
+    rig_client._axis_mover._north_raises_dec = ("west", True)
     rig_client.mount.move_dec_axis_deg(-1.0).wait(timeout=30)
-    assert rig_client.mount.ra_axis_defined
-    ha_before = rig_sim.mount.ha_h
-    dec_before = rig_sim.mount.dec_deg
-    result = rig_client.mount.move_ra_axis_deg(1.0).wait(timeout=30)
-    assert result.stop_confirmed
-    assert rig_sim.mount.ha_h == pytest.approx(ha_before + 1.0 / 15.0, abs=0.01)
-    assert rig_sim.mount.dec_deg == dec_before  # the DEC axis never moved
+    assert rig_client.mount.ra_axis_defined  # (RA moves stay inside the +-80 deg DEC bound)
 
 
 def test_finite_axis_moves_never_send_a_goto(rig_sim, rig_client):
@@ -184,8 +182,8 @@ def test_jog_stops_by_itself_when_it_is_not_renewed(rig_sim, rig_client):
     assert not handle.renew()
 
 
-def test_ra_jog_is_refused_until_dec_has_moved(onstep_sim, onstep_client):
-    onstep_sim.place(ha_h=-2.0, dec_deg=40.0, parked=False)
+def test_ra_jog_near_the_pole_is_refused_until_dec_has_moved(onstep_sim, onstep_client):
+    onstep_sim.place(ha_h=-2.0, dec_deg=87.0, parked=False)
     time.sleep(0.4)
     writes = len(onstep_sim.writes)
     with pytest.raises(RaAxisUndefinedError):
@@ -547,3 +545,14 @@ def test_connect_connects_a_device_left_disconnected_by_an_indiserver_restart(ca
         assert ("CONNECTION", {"CONNECT": "On"}) in sent
     assert "is not connected (e.g. after an indiserver restart): sending CONNECT" in caplog.text
     assert "connected by this client" in caplog.text
+
+
+def test_ra_moves_right_after_connecting_away_from_the_pole(rig_sim, rig_client):
+    """Operator (2026-11-20): after unparking at PARK RA is defined and may be used."""
+    rig_sim.place(ha_h=-2.0, dec_deg=52.0, parked=False)
+    time.sleep(2.0)  # the rig model publishes every 1.5 s while idle
+    assert rig_client.mount.ra_axis_defined
+    dec_before = rig_sim.mount.dec_deg
+    result = rig_client.mount.move_ra_axis_deg(1.0).wait(timeout=60)
+    assert result.stop_confirmed
+    assert rig_sim.mount.dec_deg == dec_before
