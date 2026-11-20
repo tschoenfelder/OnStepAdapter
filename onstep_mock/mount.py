@@ -85,6 +85,9 @@ class SimConfig:
     #: The driver's POLLING_PERIOD (ms) when it publishes one (None: no such property). The
     #: idle publish period then follows it: `idle_publish_period_s` at 1000 ms, scaled.
     polling_period_ms: float | None = None
+    #: While idle, every this-many-th publish is skipped (0 = none): field capture be8c66bf --
+    #: after Off the rig's readings came 0.77 s or 1.5 s apart, irregularly.
+    idle_skip_every: int = 0
     #: OnStep's meridian limits for manual RA motion, as hour angles (min, max); None = none.
     #: Field diag 988199c9 (2026-11-20): a manual RA move ran into "Meridian Limit (W)
     #: Exceeded" -- OnStep stopped the axis (the motion switch stayed Busy), :GU# ended in
@@ -110,7 +113,7 @@ class SimConfig:
             manual_cruise_deg_per_s=((8, 1.635), (9, 3.27)),
             status_silent_while_manual=True, manual_motion_flags_slewing=False,
             status_period_s=0.26, idle_publish_period_s=1.5, coordinate_lag_s=0.1,
-            polling_period_ms=1000.0,
+            polling_period_ms=1000.0, idle_skip_every=3,
             auto_track_on_unpark=False,
         )
         values.update(overrides)

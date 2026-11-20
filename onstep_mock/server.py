@@ -94,6 +94,7 @@ class SimulatedOnStepServer:
         self._focuser_position = 15000.0
         self._last_publish = 0.0
         self._published_with_switch_on = False
+        self._idle_publishes = 0
         self._guide_props: set[str] = set()
 
     # ------------------------------------------------------------------ setup
@@ -532,9 +533,22 @@ class SimulatedOnStepServer:
                 edge = self._mount.tick(now - last, now)
                 self._tick_peripherals(now - last, now)
                 if edge or now - self._last_publish >= self._publish_period():
-                    self._publish_mount(now)
+                    if self._skip_this_idle_publish(edge):
+                        self._last_publish = now
+                    else:
+                        self._publish_mount(now)
                 self._changed.notify_all()
             last = now
+
+    def _skip_this_idle_publish(self, edge: bool) -> bool:
+        """`SimConfig.idle_skip_every`: drop every n-th idle publish (the rig's irregular
+        0.77 / 1.5 s cadence after Off)."""
+        every = self.config.idle_skip_every
+        mount = self._mount
+        if edge or not every or mount.manual_switch_on or mount.motion == "SLEWING":
+            return False
+        self._idle_publishes += 1
+        return self._idle_publishes % every == 0
 
     def _publish_period(self) -> float:
         """The driver's poll period: `status_period_s` while a motion switch is On or a goto

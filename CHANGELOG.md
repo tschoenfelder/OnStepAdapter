@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.24 - Unreleased
+
+- A single late reading no longer ends a step mid-coast. Field capture be8c66bf
+  (2026-11-20, 0.7.23): readings after Off came 0.77 s or 1.5 s apart; a reading 0.84 s
+  after Off, still 0.06 deg short of where the axis came to rest, was taken as the end of
+  the step, the braking learned from it drifted, and 1 deg steps then landed 0.87 / 1.12 deg
+  and each needed a correction (5.7-7.9 s). Now:
+  - a single reading proves rest only when it also moved at most `REST_DECEL_SHARE` (25 %)
+    of the interval before it, and only after the coast expected with the weaker of the
+    learned and the assumed braking (`REST_COAST_FACTOR` 1.0, `REST_MARGIN_S` 0.2 s);
+  - braking is learned only from a rest that two agreeing readings proved, otherwise from
+    the next move's start reading (`_deferred_coast`).
+- Mock: `SimConfig.idle_skip_every` (rig model: 3) drops idle publishes like the rig's
+  irregular 0.77 / 1.5 s cadence after Off.
+
 ## 0.7.23 - Unreleased
 
 - A 1 deg step in ~3 s. Field capture 2c63af9f (2026-11-20): OnStep starts the axis
