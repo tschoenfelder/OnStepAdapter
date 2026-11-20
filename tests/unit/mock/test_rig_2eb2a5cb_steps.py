@@ -74,7 +74,7 @@ def test_a_dec_step_lands_on_target_promptly_and_never_moves_ra(rig_sim, rig_cli
     assert passes <= 2, passes
     # One move plus at most one short correction, each followed by the at-rest check
     # (two readings; POLLING_PERIOD is 250 ms during the move).
-    assert elapsed < _motion_s(degrees) + 5.0, (elapsed, passes)
+    assert elapsed < _motion_s(degrees) + 6.5, (elapsed, passes)
 
 
 @pytest.mark.parametrize("degrees", STEPS_DEG)
@@ -91,7 +91,7 @@ def test_an_ra_step_lands_on_target_promptly_and_never_moves_dec(rig_sim, rig_cl
     assert moved == pytest.approx(degrees, abs=_landing(degrees)), (moved, passes)
     assert rig_sim.mount.dec_deg == dec_before
     assert passes <= 2, passes
-    assert elapsed < _motion_s(degrees) + 5.0, (elapsed, passes)
+    assert elapsed < _motion_s(degrees) + 6.5, (elapsed, passes)
 
 
 def test_repeated_steps_use_the_learned_braking(rig_sim, rig_client):
@@ -168,4 +168,33 @@ def test_a_small_step_is_done_soon_after_the_coast(rig_sim, rig_client):
         rig_client.mount.move_dec_axis_deg(degrees).wait(timeout=60)
         elapsed = time.monotonic() - started
         assert _passes(rig_sim, "TELESCOPE_MOTION_NS") - before == 1
-        assert elapsed < 4.5, elapsed  # was ~6-7 s with a correction pass
+        assert elapsed < 5.5, elapsed  # was ~6-7 s with a correction pass
+
+
+def test_small_steps_stay_single_with_the_rigs_irregular_readings(rig_sim, rig_client):
+    """Field capture be8c66bf (0.7.23): readings after Off came 0.77 s or 1.5 s apart; a single
+    late reading taken mid-coast counted as rest, the braking learned from it drifted and every
+    1 deg step then landed 0.87 / 1.12 deg and needed a correction. Eight 1 deg steps back and
+    forth must each take one pass."""
+    rig_client.mount.move_dec_axis_deg(5.0).wait(timeout=60)
+    for degrees in (1.0, -1.0) * 4:
+        before = _passes(rig_sim, "TELESCOPE_MOTION_NS")
+        dec_before = rig_sim.mount.dec_deg
+        rig_client.mount.move_dec_axis_deg(degrees).wait(timeout=60)
+        moved = abs(rig_sim.mount.dec_deg - dec_before)
+        assert _passes(rig_sim, "TELESCOPE_MOTION_NS") - before == 1, moved
+        assert moved == pytest.approx(1.0, abs=_landing(1.0)), moved
+
+
+def test_a_wrong_learned_braking_never_ends_a_step_mid_coast(rig_sim, rig_client):
+    """Field capture be8c66bf: with a too strong learned braking, the single-reading rest came
+    early, a reading still mid-coast was taken as the end of the step, and the step was
+    reported done while the mount kept going. The rest check must not trust that value."""
+    rig_client.mount.move_dec_axis_deg(1.0).wait(timeout=60)
+    drive = rig_client._axis_mover._drive
+    drive.measured_brake[("dec", 9)] = [(2600.0, 2.5)]  # far stronger than the rig's ~0.55
+    dec_before = rig_sim.mount.dec_deg
+    rig_client.mount.move_dec_axis_deg(-1.0).wait(timeout=60)
+    time.sleep(3.0)  # let anything still coasting come to rest
+    moved = abs(rig_sim.mount.dec_deg - dec_before)
+    assert moved == pytest.approx(1.0, abs=_landing(1.0)), moved

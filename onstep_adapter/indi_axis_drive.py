@@ -73,8 +73,12 @@ LANDING_MIN_ARCSEC = 0.06 * 3600.0
 #: end of the coast (times `REST_COAST_FACTOR`): capture 2c63af9f -- readings came 0.77-1.5 s
 #: apart after Off, so waiting for two equal ones took ~3.3 s although the axis rested after
 #: ~1.3 s.
-REST_COAST_FACTOR = 1.2
-REST_MARGIN_S = 0.3
+REST_COAST_FACTOR = 1.0
+REST_MARGIN_S = 0.2
+#: ... and only when that reading moved at most this share of the interval before it (field
+#: capture be8c66bf: a reading still mid-coast was taken as rest; the braking learned from it
+#: drifted and 1 deg steps then landed 0.87 / 1.12 deg).
+REST_DECEL_SHARE = 0.25
 #: A pass at a slow rate is planned to last at least this long when a slower rate allows it
 #: (start/stop latency then matters less than the angle moved).
 MIN_PASS_S = 0.75
@@ -275,6 +279,10 @@ class SingleAxisDrive:
         self.measured_start_latency: dict[str, float] = learned.setdefault("latency", {})
         #: How much later than planned Off went out, per axis (sleep granularity), learned.
         self.measured_off_delay: dict[str, float] = learned.setdefault("off_delay", {})
+        #: A coast whose rest only a single late reading showed: (axis, rate index, speed at
+        #: Off, axis position at Off deg, +1/-1 motion sign), learned from the next move's
+        #: start reading instead (the axis is surely at rest by then).
+        self._deferred_coast: tuple[str, int, float, float, int] | None = None
 
     # ---- positions ----------------------------------------------------------
     def position_deg(self, axis: Axis, snapshot: IndiMountSnapshot) -> float:
@@ -468,6 +476,7 @@ class SingleAxisDrive:
             along = mover._angle_delta(start_pos, self.position_deg(axis, snapshot)) * 3600.0
             return along * sky_sign if sky_sign else abs(along)
 
+        self._learn_deferred_coast(before)
         while len(passes) < MAX_PASSES:
             remaining = requested - achieved  # > 0: keep going; < 0: overshot
             if abs(remaining) <= tolerance and passes:
@@ -653,10 +662,12 @@ class SingleAxisDrive:
             token.report("confirming_stop")
             # Where the axis was, and how fast, when Off went out.
             moved_at_off, speed = predict(off_at)
-            expected_coast_s = speed / (self.brake_deg_per_s2(axis, index, speed) * 3600.0)
-            latest = self._wait_at_rest(
-                axis, before, latest, poll_s, pause, expected_coast_s, off_at=off_at,
-                allow_controller_error=allow_controller_error or stalled,
+            # The single-reading rest uses the weaker of the learned and the assumed braking
+            # (a longer coast), so a drifting value cannot shorten the wait.
+            rest_brake = min(self.brake_deg_per_s2(axis, index, speed), ASSUMED_BRAKE_DEG_PER_S2)
+            latest, rest_proven = self._wait_at_rest(
+                axis, before, latest, poll_s, pause, speed / (rest_brake * 3600.0),
+                off_at=off_at, allow_controller_error=allow_controller_error or stalled,
             )
             if stalled:
                 moved_deg = abs(
@@ -686,8 +697,15 @@ class SingleAxisDrive:
                 sky_sign = 1 if delta > 0 else -1
             new_achieved = delta * sky_sign
             moved = new_achieved - achieved
-            if reading is not None:
+            if reading is not None and rest_proven:
                 self._learn_brake(axis, index, speed, moved * (direction * sign) - moved_at_off)
+                self._deferred_coast = None
+            elif reading is not None:
+                motion_sign = sky_sign * direction * sign
+                at_off_deg = start_pos + sky_sign * (
+                    achieved + direction * sign * moved_at_off
+                ) / 3600.0
+                self._deferred_coast = (axis, index, speed, at_off_deg, motion_sign)
             self._learn_ramp(axis, index, ramp)
             if peak_speed > 0.0 and index not in ASSUMED_FAST_RATE_ARCSEC_PER_S:
                 old = self.measured_rate.get((axis, index))
@@ -735,11 +753,21 @@ class SingleAxisDrive:
                 return True
         return False
 
+    def _learn_deferred_coast(self, before: IndiMountSnapshot) -> None:
+        deferred, self._deferred_coast = self._deferred_coast, None
+        if deferred is None or before.dec_deg is None or before.ra_hours is None:
+            return
+        axis, index, speed, at_off_deg, motion_sign = deferred
+        rest_deg = self.position_deg(axis, before)  # type: ignore[arg-type]
+        coast = self.mover._angle_delta(at_off_deg, rest_deg) * 3600.0 * motion_sign
+        if coast > 0.0:
+            self._learn_brake(axis, index, speed, coast)
+
     def _wait_at_rest(
         self, axis: Axis, before: IndiMountSnapshot, latest: IndiMountSnapshot,
         poll_s: float, pause: Callable[[float], None], expected_coast_s: float,
         *, allow_controller_error: bool = False, off_at: float | None = None,
-    ) -> IndiMountSnapshot:
+    ) -> tuple[IndiMountSnapshot, bool]:
         """Wait until the axis is at rest after Off, and return that reading.
 
         At rest = two consecutive fresh coordinate readings agree (`AT_REST_ARCSEC`). OnStep's
@@ -748,7 +776,8 @@ class SingleAxisDrive:
         while the axis still coasted 8 deg). A fresh OnStep Status after Off must also show
         tracking off (the TRACK_OFF sent with every stop). With `off_at` (when Off went out), a
         single reading taken `REST_COAST_FACTOR` x `expected_coast_s` + `REST_MARGIN_S` after it
-        proves rest on its own."""
+        proves rest on its own when it moved at most `REST_DECEL_SHARE` of the interval before.
+        Returns the reading and whether two agreeing readings proved the rest."""
         mover = self.mover
         quiet_from = (
             off_at + REST_COAST_FACTOR * expected_coast_s + REST_MARGIN_S
@@ -759,6 +788,7 @@ class SingleAxisDrive:
         seen_status = latest.status_revision
         tracking_off_seen = False
         last_position: float | None = None
+        last_step: float | None = None
         while True:
             if self._monotonic() >= deadline:
                 raise TimeoutError("Axis move stop was not confirmed")
@@ -779,10 +809,17 @@ class SingleAxisDrive:
             seen_coordinates = sample.coordinates_revision
             position = self.position_deg(axis, sample)
             read_at = self._monotonic() - max(0.0, (sample.coordinates_age_ms or 0.0) / 1000.0)
-            at_rest = read_at >= quiet_from or (last_position is not None and (
+            step = (
                 abs(mover._angle_delta(last_position, position)) * 3600.0
-                <= AT_REST_ARCSEC[axis]
-            ))
+                if last_position is not None else None
+            )
+            proven = step is not None and step <= AT_REST_ARCSEC[axis]
+            quiet = (
+                read_at >= quiet_from and step is not None and last_step is not None
+                and step <= REST_DECEL_SHARE * last_step
+            )
             last_position = position
-            if at_rest and tracking_off_seen:
-                return sample
+            if step is not None:
+                last_step = step
+            if (proven or quiet) and tracking_off_seen:
+                return sample, proven
