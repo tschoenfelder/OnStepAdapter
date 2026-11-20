@@ -63,7 +63,9 @@ ASSUMED_FAST_RATE_ARCSEC_PER_S = {8: 6.0 * 3600.0, 9: 12.0 * 3600.0}
 DRIVE_RATE_INDICES = (9, 8, 7, 6, 5, 4, 3)
 SIDEREAL_ARCSEC_PER_S = 15.041
 #: How close a move must land, as a share of its angle (above the readout floors).
-LANDING_SHARE = 0.005
+#: Field capture 9e7fd012 (2026-11-20): at 0.5 % every 1 deg step needed one or two correction
+#: passes (~2.5 s each: a first pass lands within ~2-4 %), so a 1 deg step took 6-11 s.
+LANDING_SHARE = 0.015
 #: A pass at a slow rate is planned to last at least this long when a slower rate allows it
 #: (start/stop latency then matters less than the angle moved).
 MIN_PASS_S = 0.75
@@ -109,6 +111,10 @@ STALL_READINGS = 2
 STALL_PROGRESS_ARCSEC = 5.0
 #: ... counted only once the axis moved, or this long after On (start latency on top).
 STALL_START_S = 4.0
+#: The learned wake-early allowance for Off never exceeds this (s).
+MAX_OFF_DELAY_S = 0.1
+#: Moving readings the speed/speed-up estimate of a fast pass is fitted to.
+SPEED_FIT_READINGS = 4
 #: A pass checks its stop this often (s), predicting the position between readings.
 PASS_POLL_S = 0.05
 #: How far past the last reading the position is predicted (a later reading is overdue).
@@ -167,6 +173,61 @@ _ELEMENTS = {
 }
 
 
+#: What the drives of one mount have learned (rates, braking, speed-up), per (INDI host,
+#: port, device): a reconnect builds a new drive, which then starts from what the previous one
+#: measured instead of the assumptions (field capture 9e7fd012: the first steps after every
+#: connect landed 3-10 % short).
+_LEARNED: dict[tuple[str, int, str], dict[str, dict]] = {}
+
+
+def _learned_state(mover: object) -> dict[str, dict]:
+    transport = getattr(mover, "transport", None)
+    key = (
+        str(getattr(transport, "host", "")), int(getattr(transport, "port", 0) or 0),
+        str(getattr(mover, "device", "")),
+    )
+    return _LEARNED.setdefault(key, {})
+
+
+def _speed_up_fit(ramp: list[tuple[float, float]]) -> tuple[float, float] | None:
+    """(speed at the last reading, acceleration) of a least-squares parabola through the last
+    `SPEED_FIT_READINGS` moving readings of `ramp` ((s, arcsec) pairs), or None."""
+    points = [p for p in ramp if p[1] > MIN_DETECTED_ARCSEC][-SPEED_FIT_READINGS:]
+    if len(points) < SPEED_FIT_READINGS:
+        return None
+    t_last = points[-1][0]
+    sums = [0.0] * 5
+    rhs = [0.0] * 3
+    for t, m in points:
+        x = t - t_last
+        power = 1.0
+        for k in range(5):
+            sums[k] += power
+            if k < 3:
+                rhs[k] += power * m
+            power *= x
+    matrix = [[sums[i + j] for j in range(3)] for i in range(3)]
+
+    def det(a: list[list[float]]) -> float:
+        return (
+            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+            - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+            + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+        )
+
+    d = det(matrix)
+    if abs(d) < 1e-12:
+        return None
+    coefficients = []
+    for column in range(3):
+        replaced = [row[:] for row in matrix]
+        for row in range(3):
+            replaced[row][column] = rhs[row]
+        coefficients.append(det(replaced) / d)
+    _, slope, curve = coefficients
+    return max(0.0, slope), max(0.0, 2.0 * curve)
+
+
 class ControllerStoppedAxis(RuntimeError):
     """OnStep stopped the axis itself (a limit): `escape_element` moves back out."""
 
@@ -187,15 +248,20 @@ class SingleAxisDrive:
         self.mover = mover
         self._utc = utc_clock or (lambda: datetime.now(timezone.utc))
         self._monotonic = monotonic
+        learned = _learned_state(mover)
         #: Measured rate (arcsec/s) per (axis, rate index), learned across moves.
-        self.measured_rate: dict[tuple[str, int], float] = {}
+        self.measured_rate: dict[tuple[str, int], float] = learned.setdefault("rate", {})
         #: Measured braking per (axis, rate index): (speed at Off arcsec/s, deg/s^2) samples,
         #: learned from each pass's coast.
-        self.measured_brake: dict[tuple[str, int], list[tuple[float, float]]] = {}
+        self.measured_brake: dict[tuple[str, int], list[tuple[float, float]]] = (
+            learned.setdefault("brake", {})
+        )
         #: Measured speed-up (deg/s^2) per (axis, fast rate index) and start latency (s) per
         #: axis, learned from the readings of each pass.
-        self.measured_accel: dict[tuple[str, int], float] = {}
-        self.measured_start_latency: dict[str, float] = {}
+        self.measured_accel: dict[tuple[str, int], float] = learned.setdefault("accel", {})
+        self.measured_start_latency: dict[str, float] = learned.setdefault("latency", {})
+        #: How much later than planned Off went out, per axis (sleep granularity), learned.
+        self.measured_off_delay: dict[str, float] = learned.setdefault("off_delay", {})
 
     # ---- positions ----------------------------------------------------------
     def position_deg(self, axis: Axis, snapshot: IndiMountSnapshot) -> float:
@@ -415,6 +481,7 @@ class SingleAxisDrive:
             reading: tuple[float, float] | None = None  # (read at, moved)
             moving_readings = 0
             ramp: list[tuple[float, float]] = []  # (s since On, moved) of every reading
+            planned_off: float | None = None
             progress_mark = 0.0
             progress_at = started
             readings_since_progress = 0
@@ -517,6 +584,11 @@ class SingleAxisDrive:
                     ramp.append((read_at - started, moved_now))
                     if moved_now > MIN_DETECTED_ARCSEC:
                         moving_readings += 1
+                    fit = _speed_up_fit(ramp) if fast else None
+                    if fit is not None:
+                        # Smoother than two readings: a parabola through the last ones
+                        # (rig-model runs scattered +-3 % on two-reading estimates).
+                        speed, accel = min(fit[0], cruise_cap), fit[1]
                     if moved_now > progress_mark + STALL_PROGRESS_ARCSEC:
                         progress_mark, progress_at, readings_since_progress = moved_now, now, 0
                     else:
@@ -550,9 +622,18 @@ class SingleAxisDrive:
                     for _ in range(12):
                         middle = 0.5 * (low + high)
                         low, high = (low, middle) if past_stop_point(middle) else (middle, high)
-                    pause(max(0.0, high - self._monotonic()))
+                    # Wake early by how late the previous waits woke (sleep granularity).
+                    delay = self.measured_off_delay.get(axis, 0.0)
+                    pause(max(0.0, high - delay - self._monotonic()))
+                    planned_off = high
                     break
             off_at = self._monotonic()
+            if planned_off is not None:
+                late = off_at - planned_off
+                old_delay = self.measured_off_delay.get(axis, 0.0)
+                self.measured_off_delay[axis] = min(
+                    max(old_delay + 0.5 * late, 0.0), MAX_OFF_DELAY_S
+                )
             moving_s = off_at - started
             transport.issue_switch_off(device, name, element)
             transport.issue_switch(device, "TELESCOPE_TRACK_STATE", "TRACK_OFF")

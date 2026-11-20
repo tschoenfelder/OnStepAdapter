@@ -542,10 +542,10 @@ class SimulatedOnStepServer:
         idle = self.config.idle_publish_period_s
         polling = self._props.get("POLLING_PERIOD")
         if idle is not None and polling is not None:
-            # Rig: POLLING_PERIOD 1000 ms gave a reading every ~1.5 s (serial round trips on
-            # top); a shorter period scales the same way, never below the in-motion cadence.
+            # Rig: POLLING_PERIOD 1000 ms gave a reading every ~1.5 s, 250 ms every ~0.77 s
+            # (field capture 9e7fd012) -- a fixed ~0.5 s of serial round trips on top.
             period_ms = float(polling.elements["PERIOD_MS"])
-            idle = max(self.config.status_period_s, idle * period_ms / 1000.0)
+            idle = max(self.config.status_period_s, idle * (0.351 + 0.000649 * period_ms))
         mount = self._mount
         if idle is None or mount.motion == "SLEWING":
             return self.config.status_period_s

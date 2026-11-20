@@ -187,7 +187,7 @@ class IndiAxisJogger:
             mover._check(before)
             if before.at_home:
                 mover.mark_ra_undefined()
-            mover.require_ra_defined(axis)
+            mover.require_ra_defined(axis, before)
             if lease.expired():  # released before the motion could start
                 return IndiJogResult(
                     axis, direction, rate_index, JOG_RELEASED, 0.0,

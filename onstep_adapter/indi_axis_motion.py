@@ -36,9 +36,13 @@ LOGGER = logging.getLogger(__name__)
 #: Why an RA-axis move is refused before the DEC axis has moved (see
 #: ``IndiAxisMover.ra_axis_defined``).
 RA_UNDEFINED_AT_HOME = (
-    "RA is not defined at HOME or right after connecting: move the DEC axis "
+    "RA is not defined at HOME or near the celestial pole: move the DEC axis "
     "first, then RA (nothing was sent)"
 )
+#: Within this many degrees of a celestial pole RA is undefined until a DEC move (operator,
+#: 2026-11-20: "Disable RA movement at the beginning is required only, if at/close to
+#: celestial pole. After unpark (at this position), RA is defined").
+RA_UNDEFINED_POLE_DISTANCE_DEG = 5.0
 
 
 class RaAxisUndefinedError(RuntimeError):
@@ -135,8 +139,21 @@ class IndiAxisMover:
 
     @property
     def ra_axis_defined(self) -> bool:
-        """False until a verified DEC move after connecting or reaching HOME."""
+        """True after a verified DEC move (or a start away from HOME and the poles)."""
         return self._ra_defined
+
+    def ra_axis_defined_at(self, snapshot: IndiMountSnapshot) -> bool:
+        """Whether an RA move may start from `snapshot` (see `ra_defined_at`)."""
+        return self._ra_defined or self.ra_defined_at(snapshot)
+
+    @staticmethod
+    def ra_defined_at(snapshot: IndiMountSnapshot) -> bool:
+        """RA is defined at `snapshot` without a DEC move first: not at HOME and DEC farther
+        than `RA_UNDEFINED_POLE_DISTANCE_DEG` from either pole."""
+        return (
+            not snapshot.at_home and snapshot.dec_deg is not None
+            and abs(snapshot.dec_deg) < 90.0 - RA_UNDEFINED_POLE_DISTANCE_DEG
+        )
 
     def mark_ra_undefined(self) -> None:
         """RA becomes undefined again, e.g. because the mount was sent HOME."""
@@ -178,10 +195,17 @@ class IndiAxisMover:
             return
         self._north_raises_dec = (before.pier_side, (delta > 0.0) == (offset_deg > 0.0))
 
-    def require_ra_defined(self, axis: Axis) -> None:
-        """Refuse an RA move while RA is undefined; never sends anything."""
-        if axis == "ra" and not self._ra_defined:
-            raise RaAxisUndefinedError()
+    def require_ra_defined(
+        self, axis: Axis, snapshot: IndiMountSnapshot | None = None
+    ) -> None:
+        """Refuse an RA move while RA is undefined; never sends anything. With `snapshot`,
+        RA away from HOME and the poles counts as defined (and stays so)."""
+        if axis != "ra" or self._ra_defined:
+            return
+        if snapshot is not None and self.ra_defined_at(snapshot):
+            self._ra_defined = True
+            return
+        raise RaAxisUndefinedError()
 
     #: The blockers `_check(moving=True, require_fresh_coordinates=False)` refuses on.
     _FORBIDDEN_IN_MOTION = frozenset({
@@ -525,7 +549,7 @@ class IndiAxisMover:
             escaping = self._preflight_check(before, axis, offset_deg)
             if before.at_home:
                 self._ra_defined = False
-            self.require_ra_defined(axis)
+            self.require_ra_defined(axis, before)
             assert before.ra_hours is not None and before.dec_deg is not None
             # Some INDI sessions do not publish a trusted HA even though their
             # equatorial coordinates are fresh.  HA is derived data: calculate

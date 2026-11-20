@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.22 - Unreleased
+
+- Quicker small steps. Field capture 9e7fd012 (2026-11-20): with 0.7.21 every 1 deg step
+  first landed 3-10 % short and the 0.5 % window then forced one or two correction passes
+  (~2.5 s each), so a 1 deg step took 6-11 s. Now:
+  - moves land within 1.5 % (`LANDING_SHARE`);
+  - a fast pass estimates speed and speed-up from a parabola through its last 4 moving
+    readings (two-reading estimates scattered +-3 %);
+  - Off goes out early by how late previous planned stops woke (`measured_off_delay`);
+  - what a drive learned (rates, braking, speed-up, Off delay) is kept per INDI host, port
+    and device, so a reconnect does not start from the assumptions again.
+- RA is defined right after connecting or unparking away from HOME and the poles; DEC first
+  is needed only at HOME or within `RA_UNDEFINED_POLE_DISTANCE_DEG` (5 deg) of a pole
+  (operator, 2026-11-20). `require_ra_defined(axis, snapshot)` takes the start reading.
+- Mock: the idle publish period at a given POLLING_PERIOD follows the rig (1.5 s at
+  1000 ms, 0.77 s at 250 ms); reading lag is taken from the pose history.
+
 ## 0.7.21 - Unreleased
 
 - A move OnStep stops by itself ends at once, with OnStep's reason. Field diag 988199c9
