@@ -66,6 +66,8 @@ SIDEREAL_ARCSEC_PER_S = 15.041
 #: Field capture 9e7fd012 (2026-11-20): at 0.5 % every 1 deg step needed one or two correction
 #: passes (~2.5 s each: a first pass lands within ~2-4 %), so a 1 deg step took 6-11 s.
 LANDING_SHARE = 0.015
+#: A learned per-step-size aim factor stays within this range.
+AIM_RANGE = (0.7, 1.4)
 #: A finite move (always terrestrial) accepts this share of its angle, up to the maximum.
 TERRESTRIAL_SHARE = 0.06
 TERRESTRIAL_MAX_ARCSEC = 0.5 * 3600.0
@@ -286,6 +288,9 @@ class SingleAxisDrive:
         self.measured_start_latency: dict[str, float] = learned.setdefault("latency", {})
         #: How much later than planned Off went out, per axis (sleep granularity), learned.
         self.measured_off_delay: dict[str, float] = learned.setdefault("off_delay", {})
+        #: Per (axis, step size in deg): how far a first pass lands per unit it aims at, learned
+        #: (the next first pass of that size aims at target / factor).
+        self.measured_aim: dict[tuple[str, float], float] = learned.setdefault("aim", {})
         #: A coast whose rest only a single late reading showed: (axis, rate index, speed at
         #: Off, axis position at Off deg, +1/-1 motion sign), learned from the next move's
         #: start reading instead (the axis is surely at rest by then).
@@ -491,6 +496,12 @@ class SingleAxisDrive:
             direction = sign if remaining > 0 else -sign
             index, rate, _ = self._rate_for(axis, abs(remaining))
             pass_target = abs(remaining)
+            size_key = (axis, round(requested / 3600.0, 1))
+            if not passes:
+                # Operator (2026-11-20, capture c4f9783f): "20 deg and 1 deg need different
+                # adjustments ... fix this factor" -- the first pass aims by the share it landed
+                # at for this step size before (20 deg landed fine, 1 deg 8-12 % off).
+                pass_target = pass_target / self.measured_aim.get(size_key, 1.0)
             limit_s = self._pass_limit_s(index, rate, pass_target)
             if self._monotonic() + limit_s >= deadline:
                 raise TimeoutError("Axis move would not finish before its deadline")
@@ -727,6 +738,13 @@ class SingleAxisDrive:
             elif peak_speed > 0.0:  # the fastest speed seen so far at a fast rate
                 self.measured_rate[(axis, index)] = max(
                     peak_speed, self.measured_rate.get((axis, index), 0.0)
+                )
+            if not passes and not stalled and not bound_stop[0] and pass_target > 0.0:
+                landed = moved * (direction * sign) / pass_target
+                old_factor = self.measured_aim.get(size_key)
+                fresh = min(max(landed * (old_factor or 1.0), AIM_RANGE[0]), AIM_RANGE[1])
+                self.measured_aim[size_key] = (
+                    fresh if old_factor is None else 0.5 * (old_factor + fresh)
                 )
             passes.append(DrivePass(index, element, limit_s, moving_s, moved))
             _LOG.info(
