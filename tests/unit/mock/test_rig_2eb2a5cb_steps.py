@@ -198,3 +198,13 @@ def test_a_wrong_learned_braking_never_ends_a_step_mid_coast(rig_sim, rig_client
     time.sleep(3.0)  # let anything still coasting come to rest
     moved = abs(rig_sim.mount.dec_deg - dec_before)
     assert moved == pytest.approx(1.0, abs=_landing(1.0)), moved
+
+
+def test_a_step_close_enough_for_land_aiming_needs_no_second_move():
+    """Operator (2026-11-20, b8773e44): "If the movement is close enough for terrestrial
+    mode, the second move should be skipped" -- 5 deg landing at 4.75 deg is enough."""
+    from onstep_adapter.indi_axis_drive import drive_tolerance_arcsec
+
+    assert drive_tolerance_arcsec("dec", 5.0 * 3600.0) >= 0.25 * 3600.0
+    assert drive_tolerance_arcsec("dec", 1.0 * 3600.0) >= 0.06 * 3600.0
+    assert drive_tolerance_arcsec("dec", 20.0 * 3600.0) == pytest.approx(0.5 * 3600.0)
