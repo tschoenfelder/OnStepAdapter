@@ -15,7 +15,7 @@ from .indi_motion import NO_STOP, MotionStopped, MotionToken
 from .indi_status import IndiMountSnapshot
 from .indi_transport import IndiTransport
 from .indi_gu import local_sidereal_hours
-from .indi_axis_drive import SingleAxisDrive
+from .indi_axis_drive import _ELEMENTS, ControllerStoppedAxis, SingleAxisDrive
 
 Axis = Literal["ra", "dec"]
 MIN_AXIS_MOVE_ARCSEC = 30.0
@@ -129,6 +129,9 @@ class IndiAxisMover:
         #: side east NORTH RAISED DEC, while capture b977fe85 (after HOME) saw it lower DEC --
         #: the sign is measured, never assumed.
         self._north_raises_dec: tuple[str, bool] | None = None
+        #: (axis, motion element) that leads back out of the OnStep limit a move ran into
+        #: (field diag 988199c9); None when no such limit is known.
+        self._limit_escape: tuple[str, str] | None = None
 
     @property
     def ra_axis_defined(self) -> bool:
@@ -192,6 +195,7 @@ class IndiAxisMover:
         snapshot: IndiMountSnapshot, *, moving: bool = False,
         require_fresh_coordinates: bool = True,
         allow_transient_secondary_pier_conflict: bool = False,
+        tolerated: set[str] | frozenset[str] = frozenset(),
     ) -> None:
         forbidden = {
             "indi_device_disconnected", "onstep_status_not_fresh",
@@ -203,6 +207,7 @@ class IndiAxisMover:
             forbidden.update({"coordinates_not_fresh", "coordinates_invalid"})
         if allow_transient_secondary_pier_conflict:
             forbidden.discard("pier_side_conflict")
+        forbidden -= set(tolerated)
         blockers = forbidden.intersection(snapshot.blockers)
         if (
             blockers or not snapshot.status_live or
@@ -246,7 +251,22 @@ class IndiAxisMover:
                 return False
             raise
 
-    def check_in_motion(self, snapshot: IndiMountSnapshot) -> bool:
+    def controller_error_text(self) -> str | None:
+        """OnStep Status.Error as the driver reports it ("Meridian Limit (W) Exceeded"), or
+        None when it reports none."""
+        get_property = getattr(self.transport, "get_property", None)
+        prop = get_property(self.device, "OnStep Status") if callable(get_property) else None
+        text = prop.values.get("Error", "") if prop is not None else ""
+        return None if text in {"", "None", "0"} else text
+
+    @property
+    def limit_escape(self) -> tuple[str, str] | None:
+        """(axis, motion element) that leads out of the limit OnStep stopped a move at."""
+        return self._limit_escape
+
+    def check_in_motion(
+        self, snapshot: IndiMountSnapshot, *, allow_controller_error: bool = False
+    ) -> bool:
         """The safety check while an axis move drives or coasts.
 
         Field capture 2eb2a5cb: the real lx200_OnStep driver publishes NO OnStep Status while a
@@ -256,11 +276,14 @@ class IndiAxisMover:
         False when it is stale and the coordinates are not (the caller waits, and stops a pass
         that stays blind). Every other blocker raises.
         """
+        tolerated = {"onstep_reported_error"} if allow_controller_error else set()
         try:
-            self._check(snapshot, moving=True, require_fresh_coordinates=False)
+            self._check(
+                snapshot, moving=True, require_fresh_coordinates=False, tolerated=tolerated
+            )
             return True
         except RuntimeError:
-            only_stale = set(snapshot.blockers) & self._FORBIDDEN_IN_MOTION == {
+            only_stale = set(snapshot.blockers) & self._FORBIDDEN_IN_MOTION - tolerated == {
                 "onstep_status_not_fresh"
             }
             if only_stale:
@@ -301,6 +324,34 @@ class IndiAxisMover:
                 )
 
         return restore
+
+    def _preflight_check(self, before: IndiMountSnapshot, axis: Axis, offset_deg: float) -> bool:
+        """The start check of a move; True when it is the move back out of an OnStep limit.
+
+        Field diag 988199c9: after OnStep stopped an RA move at its meridian limit, OnStep
+        kept reporting the error and every command was refused -- PARK too -- with no way
+        out. While that error is reported, the one move allowed is back the way it came."""
+        try:
+            self._check(before)
+        except RuntimeError:
+            escape = self._limit_escape
+            only_error = (
+                set(before.blockers) & self._FORBIDDEN_IN_MOTION == {"onstep_reported_error"}
+            )
+            if not only_error or escape is None:
+                raise
+            element = _ELEMENTS[(axis, 1 if offset_deg > 0 else -1)][1]
+            if escape != (axis, element):
+                reason = self.controller_error_text() or "a controller error"
+                raise RuntimeError(
+                    f"OnStep reports {reason}: only a {escape[0].upper()} move the other way "
+                    f"({escape[1]}) leads back inside; PARK works again after it"
+                ) from None
+            self._check(before, tolerated={"onstep_reported_error"})
+            return True
+        if self._limit_escape is not None and self.controller_error_text() is None:
+            self._limit_escape = None
+        return False
 
     def _dec_outside_bound(self, dec_deg: float) -> float:
         """How far ``dec_deg`` lies outside the DEC bound (0 inside it)."""
@@ -471,7 +522,7 @@ class IndiAxisMover:
             token.report("preflight", fraction=0.0)
             before = self.observe()
             observed_at = self._monotonic()
-            self._check(before)
+            escaping = self._preflight_check(before, axis, offset_deg)
             if before.at_home:
                 self._ra_defined = False
             self.require_ra_defined(axis)
@@ -541,9 +592,15 @@ class IndiAxisMover:
                     outcome = self._drive.run(
                         axis, offset_deg, before, poll_s=poll_s, deadline=deadline,
                         token=token, pause=pause, on_issue=mark_issued,
+                        allow_controller_error=escaping,
                     )
+                except ControllerStoppedAxis as stopped:
+                    self._limit_escape = (stopped.axis, stopped.escape_element)
+                    raise
                 finally:
                     restore_polling()
+                if escaping and self.controller_error_text() is None:
+                    self._limit_escape = None  # back inside: the limit error cleared
                 latest = outcome.final
                 if axis == "dec":
                     self._learn_dec_direction(before, latest, offset_deg)

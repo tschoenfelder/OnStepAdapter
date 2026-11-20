@@ -101,6 +101,14 @@ ASSUMED_ACCEL_DEG_PER_S2 = 0.6
 #: Learned speed-up values outside these ranges are ignored as measuring artefacts.
 START_LATENCY_RANGE_S = (0.0, 2.0)
 ACCEL_RANGE_DEG_PER_S2 = (0.05, 20.0)
+#: A pass whose axis made no progress (`STALL_PROGRESS_ARCSEC`) over this long and at least
+#: `STALL_READINGS` fresh readings has stalled: OnStep stopped it (field diag 988199c9: at
+#: its meridian limit, with the switch still Busy -- the pass kept it On for 40 s).
+STALL_S = 2.0
+STALL_READINGS = 2
+STALL_PROGRESS_ARCSEC = 5.0
+#: ... counted only once the axis moved, or this long after On (start latency on top).
+STALL_START_S = 4.0
 #: A pass checks its stop this often (s), predicting the position between readings.
 PASS_POLL_S = 0.05
 #: How far past the last reading the position is predicted (a later reading is overdue).
@@ -157,6 +165,15 @@ _ELEMENTS = {
     ("dec", 1): ("TELESCOPE_MOTION_NS", "MOTION_NORTH"),
     ("dec", -1): ("TELESCOPE_MOTION_NS", "MOTION_SOUTH"),
 }
+
+
+class ControllerStoppedAxis(RuntimeError):
+    """OnStep stopped the axis itself (a limit): `escape_element` moves back out."""
+
+    def __init__(self, message: str, axis: str, escape_element: str) -> None:
+        super().__init__(message)
+        self.axis = axis
+        self.escape_element = escape_element
 
 
 class SingleAxisDrive:
@@ -345,8 +362,15 @@ class SingleAxisDrive:
         self, axis: Axis, offset_deg: float, before: IndiMountSnapshot, *,
         poll_s: float, deadline: float, token: MotionToken,
         pause: Callable[[float], None], on_issue: Callable[[], None],
+        allow_controller_error: bool = False,
     ) -> DriveOutcome:
+        """`allow_controller_error`: the move leads out of an OnStep limit, whose error stays
+        reported until the axis is back inside (`IndiAxisMover.move`)."""
         mover = self.mover
+
+        def usable_sample(snapshot: IndiMountSnapshot) -> bool:
+            return mover.check_in_motion(snapshot, allow_controller_error=allow_controller_error)
+
         transport, device = mover.transport, mover.device
         requested = abs(offset_deg) * 3600.0
         tolerance = drive_tolerance_arcsec(axis, requested)
@@ -391,6 +415,10 @@ class SingleAxisDrive:
             reading: tuple[float, float] | None = None  # (read at, moved)
             moving_readings = 0
             ramp: list[tuple[float, float]] = []  # (s since On, moved) of every reading
+            progress_mark = 0.0
+            progress_at = started
+            readings_since_progress = 0
+            stalled = False
             reading_dec: float | None = None  # DEC of that reading
             dec_direction = 0.0  # +1/-1: which way the published DEC goes in this pass
             bound_stop = [False]
@@ -457,7 +485,7 @@ class SingleAxisDrive:
                         achieved, direction * sign * moved_now, requested
                     ),
                 )
-                usable = mover.check_in_motion(latest)
+                usable = usable_sample(latest)
                 if usable and latest.pier_side != before.pier_side:
                     raise RuntimeError("Pier side changed during an axis move")
                 if usable and self._leaves_bound(before, latest):
@@ -489,6 +517,17 @@ class SingleAxisDrive:
                     ramp.append((read_at - started, moved_now))
                     if moved_now > MIN_DETECTED_ARCSEC:
                         moving_readings += 1
+                    if moved_now > progress_mark + STALL_PROGRESS_ARCSEC:
+                        progress_mark, progress_at, readings_since_progress = moved_now, now, 0
+                    else:
+                        readings_since_progress += 1
+                    if (
+                        (moving_readings or now - started > STALL_START_S)
+                        and now - progress_at > STALL_S
+                        and readings_since_progress >= STALL_READINGS
+                    ):
+                        stalled = True
+                        break  # OnStep stopped the axis: switch Off, then report why
                     assert latest.dec_deg is not None
                     if reading_dec is not None and latest.dec_deg != reading_dec:
                         dec_direction = 1.0 if latest.dec_deg > reading_dec else -1.0
@@ -521,7 +560,22 @@ class SingleAxisDrive:
             # Where the axis was, and how fast, when Off went out.
             moved_at_off, speed = predict(off_at)
             expected_coast_s = speed / (self.brake_deg_per_s2(axis, index, speed) * 3600.0)
-            latest = self._wait_at_rest(axis, before, latest, poll_s, pause, expected_coast_s)
+            latest = self._wait_at_rest(
+                axis, before, latest, poll_s, pause, expected_coast_s,
+                allow_controller_error=allow_controller_error or stalled,
+            )
+            if stalled:
+                moved_deg = abs(
+                    mover._angle_delta(start_pos, self.position_deg(axis, latest))
+                )
+                reason = mover.controller_error_text() or "no reason reported"
+                escape = _ELEMENTS[(axis, -direction)][1]
+                raise ControllerStoppedAxis(
+                    f"OnStep stopped the {axis.upper()} axis after {moved_deg:.2f} deg: "
+                    f"{reason}. Move {axis.upper()} the other way to get back inside; PARK "
+                    "and all other moves are blocked until then",
+                    axis, escape,
+                )
             if bound_stop[0]:
                 raise RuntimeError(
                     f"DEC move stopped at {latest.dec_deg:+.2f} deg: going on would have passed "
@@ -590,6 +644,7 @@ class SingleAxisDrive:
     def _wait_at_rest(
         self, axis: Axis, before: IndiMountSnapshot, latest: IndiMountSnapshot,
         poll_s: float, pause: Callable[[float], None], expected_coast_s: float,
+        *, allow_controller_error: bool = False,
     ) -> IndiMountSnapshot:
         """Wait until the axis is at rest after Off, and return that reading.
 
@@ -609,7 +664,7 @@ class SingleAxisDrive:
                 raise TimeoutError("Axis move stop was not confirmed")
             pause(max(poll_s, 0.1))
             sample = mover.observe()
-            if not mover.check_in_motion(sample):
+            if not mover.check_in_motion(sample, allow_controller_error=allow_controller_error):
                 continue
             if sample.pier_side != before.pier_side:
                 raise RuntimeError("Pier side changed after an axis move")
