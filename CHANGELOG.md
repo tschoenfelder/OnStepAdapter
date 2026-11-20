@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.25 - Unreleased
+
+- Close enough is enough: a finite (terrestrial) move accepts `TERRESTRIAL_SHARE` (6 %) of
+  its angle, at most `TERRESTRIAL_MAX_ARCSEC` (0.5 deg), without a second pass. Operator
+  (2026-11-20, field capture b8773e44): "If the movement is close enough for terrestrial
+  mode, the second move should be skipped" -- 5 deg steps landed at 4.72-4.75 deg and 1 deg
+  steps at 0.86-0.89 deg, each followed by a second move (6-10 s).
+- A deferred coast (a pass whose rest only a single reading showed) is learned when the
+  next pass starts, from the reading the axis rested on. It was learned only at the next
+  move's start and so included the second pass's travel: the braking came out too weak and
+  every first pass stopped short.
+
 ## 0.7.24 - Unreleased
 
 - A single late reading no longer ends a step mid-coast. Field capture be8c66bf

@@ -66,6 +66,9 @@ SIDEREAL_ARCSEC_PER_S = 15.041
 #: Field capture 9e7fd012 (2026-11-20): at 0.5 % every 1 deg step needed one or two correction
 #: passes (~2.5 s each: a first pass lands within ~2-4 %), so a 1 deg step took 6-11 s.
 LANDING_SHARE = 0.015
+#: A finite move (always terrestrial) accepts this share of its angle, up to the maximum.
+TERRESTRIAL_SHARE = 0.06
+TERRESTRIAL_MAX_ARCSEC = 0.5 * 3600.0
 #: The least a move must land within, for steps of up to 10x this (operator 2026-11-20: a 1 deg
 #: step must be quick).
 LANDING_MIN_ARCSEC = 0.06 * 3600.0
@@ -162,7 +165,11 @@ def drive_tolerance_arcsec(axis: str, offset_arcsec: float) -> float:
     # step to step, so identical 1 deg runs landed 0.93 and 1.06 deg; a correction pass for
     # that cost 3-4 s. A small step accepts up to LANDING_MIN_ARCSEC (never over 10 %).
     small = min(LANDING_MIN_ARCSEC, 0.1 * abs(offset_arcsec))
-    return max(floor, LANDING_SHARE * abs(offset_arcsec), small)
+    # Operator (2026-11-20, field capture b8773e44): "If the movement is close enough for
+    # terrestrial mode, the second move should be skipped" -- up to TERRESTRIAL_SHARE of the
+    # step, at most TERRESTRIAL_MAX_ARCSEC.
+    terrestrial = min(TERRESTRIAL_SHARE * abs(offset_arcsec), TERRESTRIAL_MAX_ARCSEC)
+    return max(floor, LANDING_SHARE * abs(offset_arcsec), small, terrestrial)
 
 
 @dataclass(frozen=True)
@@ -488,6 +495,11 @@ class SingleAxisDrive:
             if self._monotonic() + limit_s >= deadline:
                 raise TimeoutError("Axis move would not finish before its deadline")
             name, element = _ELEMENTS[(axis, direction)]
+            # Field capture b8773e44: a deferred coast learned only at the NEXT move's start
+            # included this pass's travel -- the braking came out too weak, every first pass
+            # stopped short and needed a second one. Learn it now, from the reading the previous
+            # pass ended at rest on (taken before this pass starts the axis).
+            self._learn_deferred_coast(latest)
             self._set_rate(index)
             token.check()
             on_issue()
