@@ -580,7 +580,11 @@ class SimulatedOnStepServer:
         mount = self._mount
         status = self._props["OnStep Status"]
         status.elements[":GU# return"] = mount.raw_gu(now)
-        status.elements["Error"] = "None" if mount.fault != "ERROR" else "General error"
+        status.elements["Error"] = (
+            "General error" if mount.fault == "ERROR"
+            else f"Meridian Limit ({mount.limit_error}) Exceeded" if mount.limit_error
+            else "None"
+        )
         status.state = "Alert" if mount.fault else "Ok"
         coords = self._props["EQUATORIAL_EOD_COORD"]
         if self._serial_lost:  # the driver republishes its last values, in Alert

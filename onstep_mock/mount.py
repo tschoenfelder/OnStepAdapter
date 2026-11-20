@@ -22,6 +22,9 @@ SIDEREAL_DEG_PER_S = 15.0 / 3600.0 * SIDEREAL_RATE
 # Observed TELESCOPE_SLEW_RATE elements: 0 = 0.25x ... 6 = 20x sidereal.
 RATE_MULTIPLIERS = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 20.0, 48.0, 240.0, 600.0)
 GUIDE_MULTIPLIER = 0.5
+#: OnStep's braking when an axis reaches a limit (deg/s^2): field diag 988199c9, ~3 deg/s
+#: to rest within ~0.8 deg.
+LIMIT_BRAKE_DEG_PER_S2 = 4.0
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,12 @@ class SimConfig:
     #: The driver's POLLING_PERIOD (ms) when it publishes one (None: no such property). The
     #: idle publish period then follows it: `idle_publish_period_s` at 1000 ms, scaled.
     polling_period_ms: float | None = None
+    #: OnStep's meridian limits for manual RA motion, as hour angles (min, max); None = none.
+    #: Field diag 988199c9 (2026-11-20): a manual RA move ran into "Meridian Limit (W)
+    #: Exceeded" -- OnStep stopped the axis (the motion switch stayed Busy), :GU# ended in
+    #: error digit 7, OnStep Status.Error named the limit, and the error stayed while the
+    #: axis was outside.
+    ha_limits_h: tuple[float, float] | None = None
 
     @classmethod
     def rig_2eb2a5cb(cls, **overrides: object) -> SimConfig:
@@ -187,6 +196,9 @@ class VirtualMount:
     guide_ha_deg_per_s: float = 0.0
     guide_dec_deg_per_s: float = 0.0
     fault: str | None = None
+    #: "W" / "E" while the RA axis is outside `SimConfig.ha_limits_h` (a meridian limit).
+    limit_error: str | None = None
+    limit_stop_we: bool = False
     events: list[str] = field(default_factory=list)
     utc_origin: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -259,7 +271,7 @@ class VirtualMount:
             flags += "l"
         flags += "E"
         flags += "T" if self.pier_side == "east" else "W"
-        return flags + "060"
+        return flags + ("067" if self.limit_error else "060")
 
     def snapshot(self, now: float) -> MountSnapshot:
         alt, az = altaz(self.ha_h, self.dec_deg, self.config.observer_lat)
@@ -344,6 +356,10 @@ class VirtualMount:
         return None
 
     def _apply_manual(self, axis: str, direction: int) -> None:
+        if axis == "we" and direction and self.limit_error and (
+            (self.limit_error == "W") == (direction > 0)
+        ):
+            direction = 0  # OnStep refuses to go further out of its limit
         if axis == "ns":
             self.manual_ns = direction
             self.manual_ns_last = direction or self.manual_ns_last
@@ -447,7 +463,14 @@ class VirtualMount:
             return max(target, velocity - accel)
 
         self.manual_ns_speed = ramp(self.manual_ns_speed, self.manual_ns)
-        self.manual_we_speed = ramp(self.manual_we_speed, self.manual_we)
+        if self.limit_stop_we:  # OnStep brakes hard at a limit (988199c9: ~0.8 deg from 3 deg/s)
+            hard = LIMIT_BRAKE_DEG_PER_S2 * config.speed * config.speed * dt
+            v = self.manual_we_speed
+            self.manual_we_speed = max(0.0, v - hard) if v > 0 else min(0.0, v + hard)
+            if not self.manual_we_speed:
+                self.limit_stop_we = False
+        else:
+            self.manual_we_speed = ramp(self.manual_we_speed, self.manual_we)
         if self.manual_ns_speed and self.dec_deg >= 90.0:
             self.ns_dec_sign = -math.copysign(1.0, self.manual_ns_speed)
         ns_sign = self.ns_dec_sign
@@ -455,6 +478,14 @@ class VirtualMount:
             ns_sign = -1.0 if self.pier_side == "east" else 1.0
         self.dec_deg = max(-90.0, min(90.0, self.dec_deg + ns_sign * self.manual_ns_speed * dt))
         self.ha_h = wrap_hours(self.ha_h + self.manual_we_speed * dt / 15.0)
+        limits = config.ha_limits_h
+        if limits is not None:
+            outside = "W" if self.ha_h > limits[1] else "E" if self.ha_h < limits[0] else None
+            if outside and self.manual_we and ((outside == "W") == (self.manual_we > 0)):
+                self.manual_we = 0  # OnStep stops the axis; the INDI switch stays Busy
+                self.limit_stop_we = True
+                self.events.append(f"meridian_limit:{outside}")
+            self.limit_error = outside
         if not (self.manual_ns or self.manual_we or self.pending_manual) and not (
             self.manual_ns_speed or self.manual_we_speed
         ):

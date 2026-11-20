@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.21 - Unreleased
+
+- A move OnStep stops by itself ends at once, with OnStep's reason. Field diag 988199c9
+  (2026-11-20): a 20 deg RA step ran into "Meridian Limit (W) Exceeded" after 6.5 deg; OnStep
+  stopped the axis but left the motion switch Busy, and the drive kept it On for 40 s until
+  the operator pressed Stop. A pass now stalls out when its axis makes no progress for
+  `STALL_S` (2 s, at least 2 fresh readings), switches Off, waits for rest and raises
+  `ControllerStoppedAxis` naming OnStep Status.Error and the way out.
+- The way out of such a limit: while OnStep reports the error, every command was refused --
+  PARK too. Now the one move allowed is back the way it came (`IndiAxisMover.limit_escape`);
+  any other move is refused with a message naming the axis and direction. Once the error
+  clears, everything (PARK included) works again.
+- PARK and HOME refusals lead with OnStep's own error when it reports one, and say to move
+  the axis back out of the limit first.
+- Mock: `SimConfig.ha_limits_h` -- OnStep's meridian limits for manual RA motion (hard stop,
+  switch stays Busy, :GU# error digit 7 and "Meridian Limit (W/E) Exceeded" while outside,
+  further-out motion refused).
+
 ## 0.7.20 - Unreleased
 
 - A finite move sets the driver's `POLLING_PERIOD` to 250 ms (`FAST_POLLING_MS`) while it

@@ -89,7 +89,10 @@ class IndiHomeRouter:
         if not self._ready(before) or before.parked or before.slewing or before.tracking:
             return IndiPositionResult(
                 "home", False, before.raw_status,
-                "Fresh unparked, stationary, non-tracking status is required", None,
+                self._refusal(
+                    before, "Fresh unparked, stationary, non-tracking status is required"
+                ),
+                None,
             )
         return self._move_to_home(timeout=timeout, token=token)
 
@@ -122,7 +125,10 @@ class IndiHomeRouter:
         if not self._ready(before) or before.slewing or before.tracking:
             return IndiPositionResult(
                 "park", False, before.raw_status,
-                "Fresh stationary, non-tracking and fault-free status is required", None,
+                self._refusal(
+                    before, "Fresh stationary, non-tracking and fault-free status is required"
+                ),
+                None,
             )
         self.authority_established = False
         if before.parked:
@@ -239,6 +245,20 @@ class IndiHomeRouter:
                     f"{exc}; stop also failed: {stop_exc}", None,
                 )
             return IndiPositionResult(destination, False, last_raw, str(exc), stopped)
+
+    def _refusal(self, before, reason: str) -> str:
+        """`reason`, led by OnStep's own error when it reports one (field diag 988199c9:
+        after a move stopped at the meridian limit PARK was refused with no way out shown)."""
+        if "onstep_reported_error" not in before.blockers:
+            return reason
+        status = self.transport.get_property(self.device, "OnStep Status")
+        error = status.values.get("Error", "") if status is not None else ""
+        if error in {"", "None", "0"}:
+            error = "a controller error"
+        return (
+            f"OnStep reports {error}: move the axis back the way it came (out of the limit) "
+            f"first, then try again ({reason})"
+        )
 
     @staticmethod
     def _ready(before) -> bool:
