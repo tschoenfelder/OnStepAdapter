@@ -37,10 +37,12 @@ def rig_client(rig_sim):
         yield client
 
 
-def _landing(degrees: float) -> float:
-    """Steps there and back must add up: 1.5 % (10" floor; was 3 %, 0.5 % for 0.7.20 -- field
-    capture 9e7fd012: 0.5 % cost every 1 deg step one or two ~2.5 s correction passes)."""
-    return max(10.0 / 3600.0, 0.015 * degrees) + 1e-9
+def _landing(degrees: float, axis: str = "dec") -> float:
+    """How close a step must land: the drive's own tolerance (1.5 %, at least 0.06 deg for a
+    small step -- field captures 9e7fd012/2c63af9f), in degrees."""
+    from onstep_adapter.indi_axis_drive import drive_tolerance_arcsec
+
+    return drive_tolerance_arcsec(axis, degrees * 3600.0) / 3600.0 + 1e-9
 
 
 def _passes(sim, prop: str) -> int:
@@ -153,3 +155,17 @@ def test_what_a_drive_learned_survives_a_reconnect(rig_sim, rig_client):
         again.mount.move_dec_axis_deg(-1.0).wait(timeout=60)
         assert _passes(rig_sim, "TELESCOPE_MOTION_NS") - before == 1
         assert abs(rig_sim.mount.dec_deg - dec_before) == pytest.approx(1.0, abs=_landing(1.0))
+
+
+def test_a_small_step_is_done_soon_after_the_coast(rig_sim, rig_client):
+    """Field capture 2c63af9f: rest was proven only ~3.3 s after Off (two equal readings
+    0.77-1.5 s apart) although the axis rested after ~1.3 s; and a +-6 % landing then often
+    added a correction pass. A 1 deg step now ends one reading after its expected coast."""
+    rig_client.mount.move_dec_axis_deg(1.0).wait(timeout=60)  # learns
+    for degrees in (-1.0, 1.0, -1.0):
+        before = _passes(rig_sim, "TELESCOPE_MOTION_NS")
+        started = time.monotonic()
+        rig_client.mount.move_dec_axis_deg(degrees).wait(timeout=60)
+        elapsed = time.monotonic() - started
+        assert _passes(rig_sim, "TELESCOPE_MOTION_NS") - before == 1
+        assert elapsed < 4.5, elapsed  # was ~6-7 s with a correction pass

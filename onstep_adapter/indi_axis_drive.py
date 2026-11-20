@@ -66,6 +66,15 @@ SIDEREAL_ARCSEC_PER_S = 15.041
 #: Field capture 9e7fd012 (2026-11-20): at 0.5 % every 1 deg step needed one or two correction
 #: passes (~2.5 s each: a first pass lands within ~2-4 %), so a 1 deg step took 6-11 s.
 LANDING_SHARE = 0.015
+#: The least a move must land within, for steps of up to 10x this (operator 2026-11-20: a 1 deg
+#: step must be quick).
+LANDING_MIN_ARCSEC = 0.06 * 3600.0
+#: After Off a single fresh reading proves rest once it was taken this long after the expected
+#: end of the coast (times `REST_COAST_FACTOR`): capture 2c63af9f -- readings came 0.77-1.5 s
+#: apart after Off, so waiting for two equal ones took ~3.3 s although the axis rested after
+#: ~1.3 s.
+REST_COAST_FACTOR = 1.2
+REST_MARGIN_S = 0.3
 #: A pass at a slow rate is planned to last at least this long when a slower rate allows it
 #: (start/stop latency then matters less than the angle moved).
 MIN_PASS_S = 0.75
@@ -145,7 +154,11 @@ def drive_tolerance_arcsec(axis: str, offset_arcsec: float) -> float:
     floor = 20.0 if axis == "ra" else 10.0
     # Operator (2026-11-18 21:40): after 1/5/20 deg steps there and back, PARK still moved the
     # mount ~0.2-0.4 deg -- the 3 % of each step had added up. 0.5 % keeps that below ~0.1 deg.
-    return max(floor, LANDING_SHARE * abs(offset_arcsec))
+    # Field capture 2c63af9f (2026-11-20): OnStep starts the axis 0.3-0.6 s after On, varying
+    # step to step, so identical 1 deg runs landed 0.93 and 1.06 deg; a correction pass for
+    # that cost 3-4 s. A small step accepts up to LANDING_MIN_ARCSEC (never over 10 %).
+    small = min(LANDING_MIN_ARCSEC, 0.1 * abs(offset_arcsec))
+    return max(floor, LANDING_SHARE * abs(offset_arcsec), small)
 
 
 @dataclass(frozen=True)
@@ -642,7 +655,7 @@ class SingleAxisDrive:
             moved_at_off, speed = predict(off_at)
             expected_coast_s = speed / (self.brake_deg_per_s2(axis, index, speed) * 3600.0)
             latest = self._wait_at_rest(
-                axis, before, latest, poll_s, pause, expected_coast_s,
+                axis, before, latest, poll_s, pause, expected_coast_s, off_at=off_at,
                 allow_controller_error=allow_controller_error or stalled,
             )
             if stalled:
@@ -725,7 +738,7 @@ class SingleAxisDrive:
     def _wait_at_rest(
         self, axis: Axis, before: IndiMountSnapshot, latest: IndiMountSnapshot,
         poll_s: float, pause: Callable[[float], None], expected_coast_s: float,
-        *, allow_controller_error: bool = False,
+        *, allow_controller_error: bool = False, off_at: float | None = None,
     ) -> IndiMountSnapshot:
         """Wait until the axis is at rest after Off, and return that reading.
 
@@ -733,8 +746,14 @@ class SingleAxisDrive:
         :GU# cannot tell: on the real rig it never flags manual motion as slewing, and it is
         silent while a switch is On (field capture 2eb2a5cb: "stopped" was confirmed from it
         while the axis still coasted 8 deg). A fresh OnStep Status after Off must also show
-        tracking off (the TRACK_OFF sent with every stop)."""
+        tracking off (the TRACK_OFF sent with every stop). With `off_at` (when Off went out), a
+        single reading taken `REST_COAST_FACTOR` x `expected_coast_s` + `REST_MARGIN_S` after it
+        proves rest on its own."""
         mover = self.mover
+        quiet_from = (
+            off_at + REST_COAST_FACTOR * expected_coast_s + REST_MARGIN_S
+            if off_at is not None else math.inf
+        )
         deadline = self._monotonic() + AT_REST_TIMEOUT_S + expected_coast_s
         seen_coordinates = latest.coordinates_revision
         seen_status = latest.status_revision
@@ -759,10 +778,11 @@ class SingleAxisDrive:
                 continue
             seen_coordinates = sample.coordinates_revision
             position = self.position_deg(axis, sample)
-            at_rest = last_position is not None and (
+            read_at = self._monotonic() - max(0.0, (sample.coordinates_age_ms or 0.0) / 1000.0)
+            at_rest = read_at >= quiet_from or (last_position is not None and (
                 abs(mover._angle_delta(last_position, position)) * 3600.0
                 <= AT_REST_ARCSEC[axis]
-            )
+            ))
             last_position = position
             if at_rest and tracking_off_seen:
                 return sample
