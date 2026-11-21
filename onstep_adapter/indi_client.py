@@ -205,8 +205,7 @@ class OnStepIndiClient:
             if connected.values.get("CONNECT") != "On":
                 self._connect_disconnected_device(timeout=max(timeout, DEVICE_CONNECT_TIMEOUT_S))
 
-            reported_time = self._transport.wait_property(self.device, "TIME_UTC", timeout=timeout)
-            timestamp = datetime.fromisoformat(reported_time.values["UTC"])
+            timestamp = self._wait_driver_utc(timeout=timeout)
             if timestamp.tzinfo is None:
                 timestamp = timestamp.replace(tzinfo=timezone.utc)
             # The driver publishes a cached snapshot, not a continuously read clock.
@@ -391,6 +390,33 @@ class OnStepIndiClient:
             )
 
         return JogHandle(self._start_motion(f"{axis}_jog", run), lease)
+
+    def _wait_driver_utc(self, *, timeout: float) -> datetime:
+        """The driver's UTC time, once it publishes one.
+
+        Field diag (2026-11-21, cfc65241): right after an indiserver restart the driver's
+        TIME_UTC was still empty, and connect failed with "Invalid isoformat string: ''". Wait
+        for it to fill in, then fail with a clear reason if it never does."""
+        deadline = time.monotonic() + timeout
+        prop = self._transport.wait_property(self.device, "TIME_UTC", timeout=timeout)
+        while True:
+            text = str(prop.values.get("UTC", "")).strip()
+            if text:
+                try:
+                    return datetime.fromisoformat(text)
+                except ValueError as exc:
+                    raise ConnectionError(
+                        f"The driver reports an unreadable UTC time {text!r}"
+                    ) from exc
+            if time.monotonic() >= deadline:
+                raise ConnectionError(
+                    "The driver has not published a UTC time yet (TIME_UTC is empty); "
+                    "wait a moment after starting indiserver, then connect again"
+                )
+            time.sleep(0.2)
+            current = self._transport.get_property(self.device, "TIME_UTC")
+            if current is not None:
+                prop = current
 
     def _connect_disconnected_device(self, *, timeout: float) -> None:
         """The OnStep INDI device exists but is not connected to the controller -- typically
