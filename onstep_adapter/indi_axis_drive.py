@@ -742,7 +742,9 @@ class SingleAxisDrive:
             if not passes and not stalled and not bound_stop[0] and pass_target > 0.0:
                 landed = moved * (direction * sign) / pass_target
                 old_factor = self.measured_aim.get(size_key)
-                fresh = min(max(landed * (old_factor or 1.0), AIM_RANGE[0]), AIM_RANGE[1])
+                # `landed` is the measured gain (moved / aimed, the aim already divided by the
+                # factor), so the factor that makes the next aim land is the gain itself.
+                fresh = min(max(landed, AIM_RANGE[0]), AIM_RANGE[1])
                 self.measured_aim[size_key] = (
                     fresh if old_factor is None else 0.5 * (old_factor + fresh)
                 )
