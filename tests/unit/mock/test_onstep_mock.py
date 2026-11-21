@@ -556,3 +556,29 @@ def test_ra_moves_right_after_connecting_away_from_the_pole(rig_sim, rig_client)
     result = rig_client.mount.move_ra_axis_deg(1.0).wait(timeout=60)
     assert result.stop_confirmed
     assert rig_sim.mount.dec_deg == dec_before
+
+
+def test_connect_waits_for_a_driver_that_has_not_published_its_utc_time_yet():
+    """Field diag cfc65241 (2026-11-21): right after an indiserver restart TIME_UTC was still
+    empty and connect failed with "Invalid isoformat string: ''". Connect now waits for the
+    driver's time to fill in."""
+    import threading
+
+    from onstep_mock.testing import runtime_config, wait_for_live_status
+    from onstep_adapter import OnStepClient
+
+    with SimulatedOnStepServer(SimConfig(speed=20.0)) as sim:
+        with sim._lock:
+            sim._props["TIME_UTC"].elements["UTC"] = ""
+            sim._publish("TIME_UTC")
+
+        def fill_in() -> None:
+            time.sleep(1.0)
+            with sim._lock:
+                sim._props["TIME_UTC"].elements["UTC"] = "2026-11-21T14:00:00"
+                sim._publish("TIME_UTC")
+
+        threading.Thread(target=fill_in, daemon=True).start()
+        with OnStepClient(config=runtime_config(sim)) as client:
+            wait_for_live_status(client)
+            assert client.mount.get_status().status_live
