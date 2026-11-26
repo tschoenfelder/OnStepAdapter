@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.29 - Unreleased
+
+- INDI reader: every processed stream element is dropped, not only property vectors.
+  Field 2026-11-26: accumulated `<message>` elements kept one CPU core busy and let the
+  reader fall behind until commands failed ("TELESCOPE_SLEW_RATE did not update").
+
 ## 0.7.25 - Unreleased
 
 - Close enough is enough: a finite (terrestrial) move accepts `TERRESTRIAL_SHARE` (6 %) of
