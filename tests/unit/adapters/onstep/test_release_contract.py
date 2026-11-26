@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 def test_public_release_surface() -> None:
-    assert __version__ == "0.7.28"
+    assert __version__ == "0.7.29"
     assert OnStepClient is not None
     assert OnStepMount is not None
     assert OnStepFocuser is not None
@@ -60,7 +60,7 @@ def test_0711_wheel_manifest_is_indi_only() -> None:
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     setup = (root / "setup.py").read_text(encoding="utf-8")
 
-    assert 'version = "0.7.28"' in pyproject
+    assert 'version = "0.7.29"' in pyproject
     assert 'onstep_adapter = ["config.indi.example.toml"]' in pyproject
     assert "pyserial" not in pyproject
     adapter_modules = _wheel_allowlist(root)["onstep_adapter"]

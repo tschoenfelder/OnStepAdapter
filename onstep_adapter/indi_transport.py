@@ -379,6 +379,7 @@ class IndiTransport:
         parser.feed("<stream>")
         decoder = codecs.getincrementaldecoder("utf-8")()
         root: ET.Element | None = None
+        depth = 0
         failure: BaseException | None = None
         try:
             while True:
@@ -396,12 +397,18 @@ class IndiTransport:
                     raise ConnectionError("INDI server closed the connection")
                 parser.feed(decoder.decode(chunk))
                 for event, node in parser.read_events():
-                    if event == "start" and node.tag == "stream":
-                        root = node
-                    elif event == "end" and node.tag.startswith(("def", "set")) and node.tag.endswith("Vector"):
+                    if event == "start":
+                        if root is None:
+                            root = node
+                        depth += 1
+                        continue
+                    depth -= 1
+                    if node.tag.startswith(("def", "set")) and node.tag.endswith("Vector"):
                         self._record(node)
-                        if root is not None:
-                            root.remove(node)
+                    # Drop every finished top-level element (messages included): kept
+                    # elements make each removal slower until the reader falls behind.
+                    if depth == 1 and root is not None:
+                        root.remove(node)
         except BaseException as exc:
             failure = exc
         finally:
